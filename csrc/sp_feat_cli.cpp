@@ -91,6 +91,7 @@ int main(int argc, char ** argv) {
     const char * d2tf  = nullptr;
     const char * dump_argmax = nullptr;
     const char * dump_feat  = nullptr;
+    const char * dump_tokens = nullptr;
     int32_t ngl   = 99;
     uint32_t nctx = 1024;
     int32_t limit = 0;
@@ -112,6 +113,7 @@ int main(int argc, char ** argv) {
         else if (a == "--d2t")        { d2tf = next("--d2t"); }
         else if (a == "--dump-argmax"){ dump_argmax = next("--dump-argmax"); }
         else if (a == "--dump-feat")  { dump_feat  = next("--dump-feat"); }
+        else if (a == "--dump-tokens"){ dump_tokens = next("--dump-tokens"); }
         else if (a == "--add-bos")    { add_bos = true; }
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
@@ -279,6 +281,10 @@ int main(int argc, char ** argv) {
     if (dump_feat) {
         FILE * f = std::fopen(dump_feat, "wb");
         if (f) { std::fwrite(feat.data(), 1, feat.size(), f); std::fclose(f); }
+    }
+    if (dump_tokens) {
+        FILE * f = std::fopen(dump_tokens, "wb");
+        if (f) { std::fwrite(toks.data(), 4, toks.size(), f); std::fclose(f); }
     }
 
     std::printf("{\n");

@@ -282,7 +282,7 @@ SP_API int32_t sp_decode(
         batch.pos[i]      = start_pos + i;
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
-        batch.logits[i]   = (want_logits && (feat_out || argmax_out)) ? 1 : 0;
+        batch.logits[i]   = want_logits ? 1 : 0;
     }
     batch.n_tokens = n;
 
@@ -356,4 +356,30 @@ SP_API int32_t sp_decode(
     }
 
     return n;
+}
+
+// Row pointer into the logits buffer of the last sp_decode(want_logits = 1).
+// Valid until the next decode. Callers must not free it.
+SP_API const float * sp_logits(sp_handle * h, int32_t i) {
+    if (!h || !h->ctx) {
+        return nullptr;
+    }
+    return llama_get_logits_ith(h->ctx, i);
+}
+
+SP_API int32_t sp_token_to_piece(
+        sp_handle * h, int32_t token, char * buf, int32_t cap) {
+    if (!h || !h->model || !buf || cap <= 0) {
+        return -1;
+    }
+    return llama_token_to_piece(
+            llama_model_get_vocab(h->model), (llama_token) token,
+            buf, cap, /*lstrip*/ 0, /*special*/ false);
+}
+
+SP_API int32_t sp_is_eog(sp_handle * h, int32_t token) {
+    if (!h || !h->model) {
+        return 0;
+    }
+    return llama_vocab_is_eog(llama_model_get_vocab(h->model), (llama_token) token) ? 1 : 0;
 }

@@ -28,3 +28,9 @@ target_link_options(spark_feat PRIVATE "-Wl,-rpath,${LLAMA_BUILD}")
 add_executable(sp_feat_cli sp_feat_cli.cpp)
 target_link_libraries(sp_feat_cli PRIVATE spark_feat)
 target_link_options(sp_feat_cli PRIVATE "-Wl,-rpath,${LLAMA_BUILD}")
+
+# coverage probe: generates with the target model and reports how much of its
+# output the draft vocabulary can represent
+add_executable(sp_gen_cli sp_gen_cli.cpp)
+target_link_libraries(sp_gen_cli PRIVATE spark_feat)
+target_link_options(sp_gen_cli PRIVATE "-Wl,-rpath,${LLAMA_BUILD}")
