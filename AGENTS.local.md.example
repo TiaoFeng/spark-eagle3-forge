@@ -1,0 +1,54 @@
+# AGENTS.local.md — 本機環境（模板）
+
+複製為 `AGENTS.local.md`（已列入 `.gitignore`，**不會被提交**）後填入自己的環境。
+
+```bash
+cp AGENTS.local.md.example AGENTS.local.md
+```
+
+---
+
+## 1. 硬體
+
+| 項目 | 值 |
+|---|---|
+| GPU | `<型號>`，`<VRAM MiB>`，規格頻寬 `<GB/s>` |
+| CPU | `<threads>` threads |
+| RAM | MemTotal `<GiB>` / MemAvailable `<GiB>` |
+| swap | `<有/無>` |
+| `/dev/shm` | tmpfs `<大小>` |
+| 磁碟 | `<型號>`，可用 `<GB>` |
+| CUDA | `<版本>`，位於 `<路徑>` |
+
+## 2. 路徑
+
+```bash
+export LLAMACPP_ROOT=<path to llama.cpp checkout>
+export MODELS_DIR=<dir containing the target GGUF and the v8 head>
+export SPARK_START=<path to your llama-server start script>
+export PYTHON_ENV=<path to your python env>
+```
+
+| 用途 | 路徑 |
+|---|---|
+| target 權重 | `${MODELS_DIR}/<target>.gguf` |
+| v8 頭（推論用） | `${MODELS_DIR}/spark-eagle3-v8.gguf` |
+| v8 頭（訓練起點） | `datasets/v8/model.safetensors` + `v8/config.json` |
+
+## 3. 實測環境
+
+```
+python <ver> / torch <ver> / CUDA <ver>
+safetensors <ver> / gguf <ver> / numpy <ver>
+llama.cpp <build>
+```
+
+## 4. 原始量測數據
+
+貼上自己的 benchmark 結果（`AGENTS.md` 只引用相對結論，絕對值放這裡）。
+
+## 5. 本機操作注意
+
+- 需要的 VRAM 餘裕、桌面佔用量
+- 行程清理方式
+- 其他只在本機成立的前置條件
