@@ -128,6 +128,7 @@ int main(int argc, char ** argv) {
     const char * model = nullptr;
     const char * d2tf  = nullptr;
     const char * outdir = nullptr;
+    const char * dump_steps = nullptr;
     std::vector<const char *> prompts;
     int32_t ngl    = 99;
     uint32_t nctx  = 2048;
@@ -148,6 +149,7 @@ int main(int argc, char ** argv) {
         else if (a == "--d2t")         { d2tf = next("--d2t"); }
         else if (a == "--prompt-file") { prompts.push_back(next("--prompt-file")); }
         else if (a == "--out-dir")     { outdir = next("--out-dir"); }
+        else if (a == "--dump-steps")  { dump_steps = next("--dump-steps"); }
         else if (a == "--n-gen")       { n_gen = std::atoi(next("--n-gen")); }
         else if (a == "--ctx")         { nctx = (uint32_t) std::atoi(next("--ctx")); }
         else if (a == "--ngl")         { ngl = std::atoi(next("--ngl")); }
@@ -194,6 +196,7 @@ int main(int argc, char ** argv) {
     std::printf("[\n");
     bool first_out = true;
     rng_t rng(seed);
+    std::vector<int32_t> steps; // 4 int32 per step: prompt index, token, argmax, has_cjk
 
     for (size_t pi = 0; pi < prompts.size(); ++pi) {
         std::string text;
@@ -249,6 +252,20 @@ int main(int argc, char ** argv) {
             const int32_t nb = sp_token_to_piece(h, tok, piece, (int32_t) sizeof(piece));
             if (nb > 0) { out.append(piece, (size_t) nb); }
 
+            // CJK ideographs occupy U+4E00..U+9FFF, i.e. UTF-8 lead bytes E4..E9.
+            // Good enough to tell "this step needed a Chinese token" from ASCII.
+            int32_t has_cjk = 0;
+            for (int32_t q = 0; q < nb; ++q) {
+                const unsigned char byte = (unsigned char) piece[q];
+                if (byte >= 0xE4 && byte <= 0xE9) { has_cjk = 1; break; }
+            }
+            if (dump_steps) {
+                steps.push_back((int32_t) pi);
+                steps.push_back(tok);
+                steps.push_back(argmax);
+                steps.push_back(has_cjk);
+            }
+
             ++pos;
             cur = tok;
             if (sp_is_eog(h, tok)) { break; }
@@ -278,6 +295,17 @@ int main(int argc, char ** argv) {
     }
 
     std::printf("\n]\n");
+
+    if (dump_steps) {
+        FILE * f = std::fopen(dump_steps, "wb");
+        if (f) {
+            std::fwrite(steps.data(), sizeof(int32_t), steps.size(), f);
+            std::fclose(f);
+        } else {
+            std::fprintf(stderr, "cannot write %s\n", dump_steps);
+        }
+    }
+
     sp_destroy(h);
     return 0;
 }
