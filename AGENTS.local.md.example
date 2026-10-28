@@ -1,6 +1,7 @@
-# AGENTS.local.md — 本機環境（模板）
+# AGENTS.local.md — Local Environment (Template)
 
-複製為 `AGENTS.local.md`（已列入 `.gitignore`，**不會被提交**）後填入自己的環境。
+Copy this file as `AGENTS.local.md` (it is listed in `.gitignore` and **will not be committed**),
+then fill in your own environment details.
 
 ```bash
 cp AGENTS.local.md.example AGENTS.local.md
@@ -8,19 +9,19 @@ cp AGENTS.local.md.example AGENTS.local.md
 
 ---
 
-## 1. 硬體
+## 1. Hardware
 
-| 項目 | 值 |
+| Item | Value |
 |---|---|
-| GPU | `<型號>`，`<VRAM MiB>`，規格頻寬 `<GB/s>` |
+| GPU | `<Model>`, `<VRAM MiB>`, peak bandwidth `<GB/s>` |
 | CPU | `<threads>` threads |
 | RAM | MemTotal `<GiB>` / MemAvailable `<GiB>` |
-| swap | `<有/無>` |
-| `/dev/shm` | tmpfs `<大小>` |
-| 磁碟 | `<型號>`，可用 `<GB>` |
-| CUDA | `<版本>`，位於 `<路徑>` |
+| swap | `<Yes/No>` |
+| `/dev/shm` | tmpfs `<size>` |
+| Disk | `<Model>`, available `<GB>` |
+| CUDA | `<Version>`, located at `<path>` |
 
-## 2. 路徑
+## 2. Paths
 
 ```bash
 export LLAMACPP_ROOT=<path to llama.cpp checkout>
@@ -29,13 +30,13 @@ export SPARK_START=<path to your llama-server start script>
 export PYTHON_ENV=<path to your python env>
 ```
 
-| 用途 | 路徑 |
+| Purpose | Path |
 |---|---|
-| target 權重 | `${MODELS_DIR}/<target>.gguf` |
-| v8 頭（推論用） | `${MODELS_DIR}/spark-eagle3-v8.gguf` |
-| v8 頭（訓練起點） | `datasets/v8/model.safetensors` + `v8/config.json` |
+| Target Weight | `${MODELS_DIR}/<target>.gguf` |
+| v8 head (for inference) | `${MODELS_DIR}/spark-eagle3-v8.gguf` |
+| v8 head (training starting point) | `datasets/v8/model.safetensors` + `v8/config.json` |
 
-## 3. 實測環境
+## 3. Test Environment
 
 ```
 python <ver> / torch <ver> / CUDA <ver>
@@ -43,12 +44,12 @@ safetensors <ver> / gguf <ver> / numpy <ver>
 llama.cpp <build>
 ```
 
-## 4. 原始量測數據
+## 4. Raw Measurement Data
 
-貼上自己的 benchmark 結果（`AGENTS.md` 只引用相對結論，絕對值放這裡）。
+Paste your own benchmark results here (`AGENTS.md` only references the conclusions; include the absolute values here).
 
-## 5. 本機操作注意
+## 5. Local Environment Considerations
 
-- 需要的 VRAM 餘裕、桌面佔用量
-- 行程清理方式
-- 其他只在本機成立的前置條件
+- Required VRAM headroom and desktop space usage
+- Process cleanup methods
+- Other prerequisites specific to the local environment
