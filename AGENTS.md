@@ -125,6 +125,22 @@ $$\text{加速} = \frac{1 + p_0}{1.12} \qquad \text{打平點 } p_0 \approx 0.12
   ```
   緩衝為 **F32**、大小 `n_embd × n_batch`、逐層獨立（`src/llama-context.cpp:2409`）
 - 但 `llama-ext.h` 在 `src/` 下（非 `include/`）→ 標頭非公開，**呼叫端要自己宣告原型或編譯 shim**
+- 且該標頭的宣告**不在 `extern "C"` 區塊內**（`nm -D` 顯示 mangled 名）→ shim **必須用 C++ 編譯**，純 C 連不上
+
+### 2.7 draft 詞表只有 32K（p0 的硬性上限）
+
+`eagle3` 頭的輸出維度是 **32000**（`draft_vocab_size`，`lm_head.weight = [32000, 2560]`），
+runtime 用 `d2t` 把這 32000 個 logits 散射回 131072 的 target 詞表，其餘一律 `-INFINITY`
+（`src/models/eagle3.cpp:307`）。因此
+
+$$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vocab}\big]$$
+
+實測 coverage@32K（Q6_K、512 token）：中文技術散文 **0.30**、C++ 原始碼 **0.56**。
+→ 中文散文的 p0 **結構上不可能超過 0.30**；若某語域的 coverage < G4 門檻，**微調再久也達不到**，
+只能換詞表。`d2t` 張量的 `ne[0]` 決定 draft 詞表大小（`src/models/eagle3.cpp:47`），
+所以調整詞表大小**不需要改 runtime**，但 `lm_head` 的行語意會變（不可 warm-start）。
+
+> 詳細量測與 `d2t` / `t2d` 語意見 `docs/notes.md`。
 
 ---
 
@@ -136,7 +152,7 @@ $$\text{加速} = \frac{1 + p_0}{1.12} \qquad \text{打平點 } p_0 \approx 0.12
 | 訓練框架 | 純 PyTorch（自寫 1 層 decoder） | head 只有 218M 參數；不依賴 transformers 版本相容性 |
 | 訓練目標 | **CE against target argmax** | runtime 只能提 argmax；作者實測 relabel 讓接受率 0.49→0.81 |
 | 第二段 loss | training-time test（回饋自身輸出） | 作者實測 p0 0.50→0.70，是 `n_max>1` 有效的關鍵 |
-| 特徵精度 | **bf16**（llama.cpp 給 F32，落地前四捨五入到 bf16） | 與 v8 的上游訓練一致（該頭權重本身是 BF16）；容量翻倍。evaluator 也要同樣量化到 bf16 以保持一致 |
+| 特徵精度 | **bf16**（llama.cpp 給 F32，落地前四捨五入到 bf16） | 容量翻倍（2.79M vs 1.4M token）。**注意：v8 的 safetensors 是全 F32**（GGUF 才是轉檔時轉 bf16），所以 bf16 是我們的取捨、不是沿襲；需在 S1 以同一批資料比對 p0。evaluator 必須同樣捨入 |
 | 特徵存放 | **memfd（`os.memfd_create`）+ mmap** | 純 RAM、**不受 tmpfs 配額限制**、不寫 NVMe、不需 root。超量行為是 OOM（故須前置檢查容量） |
 | 單輪容量 | **40 GiB ≈ 2.79M token** | RAM 可用量 − ~10 GiB 訓練固定開銷，再留 3 GiB 餘裕（本機值見 `AGENTS.local.md`） |
 | 分段方式 | 每段 extract → train → **立刻存 checkpoint** | 記憶體特徵行程死掉即遺失，最壞只損失一段 forward（約 12 分鐘） |
@@ -199,9 +215,16 @@ flowchart LR
 
 | offset | 型別 | 內容 |
 |---:|---|---|
-| 0 | bf16[3][2560] | layer 2 / 18 / 33 的**輸入** hidden state（15,360 B） |
-| 15360 | int32 | `token_id`（該位置的輸入 token，供 embedding lookup） |
-| 15364 | int32 | `argmax_id`（target 在該位置的 next-token argmax，即訓練標籤） |
+| 0 | bf16[3][2560] | layer 2 / 18 / 33 的**輸入** hidden state（15,360 B），位置 `p` |
+| 15360 | int32 | `token_id` = **`token[p+1]`**（供 embedding lookup；注意是 shift-left） |
+| 15364 | int32 | `argmax_id` = **`argmax[p+1]`**（target 在該位置的 next-token argmax，即訓練標籤） |
+
+**為何是 `p+1`**：runtime 的 draft 在記憶體位置 P 吃的是 `(token[P+1], g_embd[P])`
+（`common/speculative.cpp:747`）。若這裡存成同一位置的 token，head 會學到錯位的目標，
+而且只有到 G1 才會發現。
+
+驗證：G0 檢查 `layer_inp[0]` 是否等於 `llama_model_get_tok_embd_rows()` 的同一列——
+通過即代表層索引、token-major 佈局與 bf16 轉換同時正確（實測 max|diff| ≈ 3e-4，即 bf16 捨入量級）。
 
 ```json
 // shard-NNNN.meta.json
@@ -230,7 +253,9 @@ flowchart LR
 spark-eagle3-forge/
 ├── AGENTS.md                 # 本文件
 ├── csrc/
-│   └── spark_feat.c          # C shim：包 libllama 的特徵抽取（避免 ctypes 猜 struct 佈局）
+│   ├── CMakeLists.txt        # 以 -DLLAMACPP_ROOT=… 設定
+│   ├── spark_feat.cpp        # **C++** shim：包 libllama 的特徵抽取，對外導出純 C ABI
+│   └── sp_feat_cli.cpp       # M1/G0 harness：decode、抽特徵、印 JSON、算 coverage
 ├── spark_eagle3/
 │   ├── llamacpp.py           # 載入 shim、tokenize、decode、回傳 numpy
 │   ├── feats.py              # memfd 特徵緩衝、容量前置檢查、shard 寫入
@@ -326,7 +351,9 @@ SPEC_NMAX=1 SPEC_SAMPLING=greedy EAGLE="$OUT_HEAD_GGUF" "$SPARK_START"
 |---|---|
 | memfd 超量 → OOM killer 無聲殺行程 | 寫入前檢查 `n_tokens × 15368 ≤ 預算`；每段訓完立刻存 checkpoint |
 | 常無 swap；桌面環境佔用 RAM/VRAM | 訓練前釋放桌面佔用（關瀏覽器、桌面移至 iGPU） |
-| `llama-ext.h` 非公開標頭 | 在 `csrc/` 寫 C shim 編譯成 `.so`，**不要**用 ctypes 猜 struct 佈局 |
+| `llama-ext.h` 非公開標頭 | 在 `csrc/` 寫 shim 編譯成 `.so`，**不要**用 ctypes 猜 struct 佈局 |
+| `llama-ext.h` 的函式是 C++ linkage | shim 必須用 **C++** 編譯並手動宣告原型，不能用純 C |
+| draft 詞表 32K 鎖住 p0 上限（§2.7） | 訓練前先量各語域 coverage；不足就先換詞表，別急著訓練 |
 | 特徵 F32 → bf16 的捨入 | evaluator 也要同樣捨入，確保 train/eval 一致 |
 | `context-shift` 改變位置編碼 | extract 時固定 chunk、不啟用 context shift |
 | chunk 邊界 | 每 chunk 多存 1 個 token 以取 shift 後的 argmax |

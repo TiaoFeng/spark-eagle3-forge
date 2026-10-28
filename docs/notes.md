@@ -1,0 +1,94 @@
+# 設計筆記
+
+只記錄**可移植**的推導、實測與結論。機器相關數據（絕對路徑、t/s、容量）見 `AGENTS.local.md`。
+
+---
+
+## 2026-10-28：v8 檢查點核實 + shim 的 G0 通過
+
+### 1. 上游檔案核實（推翻兩處既有描述）
+
+| 項目 | 原本描述 | 實測 |
+|---|---|---|
+| 頭權重精度 | 「該頭權重本身是 BF16」 | safetensors 內 **14/14 張量全為 F32**，`config.json` 的 `torch_dtype = float32`；GGUF 才是轉檔時 `--outtype bf16` |
+| draft 詞表 | 未提及 | `draft_vocab_size = 32000`，`lm_head.weight = [32000, 2560]` |
+
+補充確認：
+
+- `fc.weight` 在 HF 是 `[2560, 7680]`（GGUF 的 `ne0 = 7680`，同一個東西），對應 3 層 × 2560。
+- `d2t` 是 **delta 儲存**：`target[i] = d2t[i] + i`；32000 個 id 互異、全部落在 `[0, 131071]`。
+- `t2d` 對集合外的 99,072 個 id **全部填 0**（佔位值，不是 `-1`）。llama.cpp **不讀 `t2d`**，只用 `d2t` 走 `ggml_set_rows` 散射，非 draft 詞表的 logits 一律設 `-INFINITY`（`src/models/eagle3.cpp:307`）。
+- 官方 `llama.cpp-spark2_5-layer-inputs.patch` 與本機分支的改動**語意相同**（本機多 3 行註解），patch 正確性不必再懷疑。
+
+### 2. 硬性上限：draft 詞表只有 32K
+
+EAGLE-3 head 的輸出維度是 32000，驗證端只會看到這 32000 個候選。因此
+
+$$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vocab}\big]$$
+
+實測（Q6_K，每份 512 token，`layers=[2]`，只算 argmax 不算特徵）：
+
+| 語料 | coverage@32K |
+|---|---:|
+| 中文技術散文（`AGENTS.md` 全文前 512 token） | **0.3047** |
+| C++ 原始碼（`llama-context.cpp`） | 0.5566 |
+
+推論：
+
+- 中文散文的 p0 **結構上不可能超過 0.30**（實測 0.013，代表模型本身也差，但天花板先鎖住了）。
+- code 的天花板約 0.56，實測 p0 0.324 → 已用掉天花板的 58%。
+- G4 要求 `chat_think` p0 ≥ 0.33；若該語域 coverage < 0.33，**只靠微調不可能達標**，必須換詞表。
+
+換詞表的成本結構（重要）：
+
+| 方案 | `lm_head` 形狀 | 可 warm-start 的部分 |
+|---|---|---|
+| 維持 32K + 舊 d2t | 32000×2560 | 全部 |
+| 以自有語料重挑 32K | 32000×2560 | fc / decoder / norm 可；`lm_head` 需重訓（行語意改變） |
+| 擴到 64K | 64000×2560（+81.9M 參數） | 同上 |
+
+llama.cpp 由 `d2t` 張量的 `ne[0]` 決定 draft vocab 大小（`src/models/eagle3.cpp:47`），所以**詞表大小是可變的**，不需要改 runtime。
+
+### 3. G0：特徵自洽（通過）
+
+`layer_inp[0]` 就是 embedding 之後、第一層 attention 之前的 hidden state，因此必須等於 `llama_model_get_tok_embd_rows()` 的同一列：
+
+| 指標 | 值 |
+|---|---:|
+| max \|diff\| | 2.95e-4 |
+| mean \|diff\| | 2.71e-5 |
+| 回歸斜率（feature ÷ embd） | 1.000004 |
+
+誤差量級正好等於 bf16 捨入 → **層索引、token-major 佈局、bf16 轉換三者同時正確**，且 Spark **不縮放** embedding（無 `sqrt(n_embd)` 因子）。三層兩兩之間的最小 max|diff| = 0.71，確認非退化。
+
+G0 比 G1 便宜兩個數量級：不必訓練、不必比對線上 p0，一次 decode 就能判定。
+
+### 4. 執行期語意（實作必須遵守）
+
+- `common/speculative.cpp:747` 明文：draft 在記憶體位置 P 吃的是 **(token[P+1], g_embd[P])**。→ 訓練記錄必須 **shift-left**：`feature[p]` 配 `token[p+1]`、標籤配 `argmax[p+1]`。
+- `llama_set_embeddings_layer_inp()` 會設 `sched_need_reserve = true`（原始碼註解：少了這個 reserve，接受率會歸零）→ 必須在第一次 `llama_decode()` 前設完。
+- `llama_get_embeddings_layer_inp()` 內部自帶 `synchronize()`。
+- `n_outputs_max` 預設等於 `n_batch` → 可以一次取得全 batch 的 logits，成本 `n_vocab × n_batch × 4 B`。因此 **argmax 在 shim 內算完**，不回傳 logits。
+- `embeddings_layer_inp` 與 `cparams.embeddings` 無關：不必開 `embeddings` 也會配置輸出緩衝。
+
+### 5. shim（`csrc/`）狀態
+
+- 必須用 **C++** 編譯：`llama_get/set_embeddings_layer_inp` 是 C++ linkage（`nm -D` 可見 `_Z30llama_get_embeddings_layer_inpP13llama_contextj`），純 C TU 連不上。
+- 做法：手動宣告兩個私有原型（不 include `src/llama-ext.h`，避免拉進 `llama-arch.h`），對外只導出純 C ABI。
+- 已完成：`sp_create / sp_destroy / sp_set_layers / sp_tokenize / sp_decode / sp_reset / sp_row_stride / sp_tok_embd_rows`。
+  `sp_decode()` 一次做完 decode、多層特徵抽取（F32→BF16 RNE）、逐列 argmax，並依 §5 佈局寫出 `[bf16 × n_layer_feat][int32 token][int32 argmax]`。
+- `sp_feat_cli` 是 M1/G0 harness：印 JSON、可 `--dump-argmax` / `--dump-feat`、可帶 `--d2t` 直接算 coverage。
+
+---
+
+## 待決策（建議在 S2 前定案）
+
+1. **draft 詞表**（會決定 `lm_head` 形狀，必須在訓練前定）
+   - 先用 S2a 語料算 coverage 的三個變體：現有 32K / 頻率重挑 32K / 64K。
+   - 判準：若 chat_think 語域的 coverage 明顯 < 0.33，直接換詞表，不要浪費一次訓練。
+2. **特徵精度 bf16 vs F32**：v8 原始權重是 F32，bf16 只是為了容量（2.79M vs 1.4M token）。在 S1 用同一批資料各訓一次短程，比 p0 再定。
+3. **chunk 內是否保留連續 KV**：保留較接近真實長上下文，但 9 層 full attention 會隨深度變慢；每 chunk reset 則前 512 token 的上下文被截斷。
+
+## 下一步
+
+S1：`spark_eagle3/llamacpp.py`（ctypes binding）+ `feats.py`（memfd、容量前置檢查）→ 32K token 端到端 → G1。
