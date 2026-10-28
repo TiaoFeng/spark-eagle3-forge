@@ -99,6 +99,37 @@ $$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vo
 
 llama.cpp 由 `d2t` 張量的 `ne[0]` 決定 draft vocab 大小（`src/models/eagle3.cpp:47`），所以**詞表大小是可變的**，不需要改 runtime。
 
+### 2c. 重建詞表的驗證（純查表，未訓練）
+
+語料由 `scripts/fetch_corpora.sh` 取得（`datasets/raw/`，未入庫）。三份檔案的大小與 sha256
+都與 HuggingFace 公布的 LFS oid 相符，格式也都能正常解析：
+
+| 來源 | 檔案大小 | 抽樣預算 | token |
+|---|---:|---:|---:|
+| COIG-CQIA（`m-a-p/COIG-CQIA`） | 149 MB | 40.0M 字 | 23.5M |
+| firefly-train-1.1M（`YeungNLP/…`） | 1.17 GB | 40.0M 字 | 25.6M |
+| zh-wikipedia（`wikimedia/wikipedia` 1/6 分片） | 587 MB | 40.0M 字 | 28.5M |
+| llama.cpp 原始碼 | — | 23.3M 字 | 8.3M |
+
+`Chinese-FineWeb-Edu` 與 `CCI3-Data` 需要 HF 登入（401 / gated），因此未使用。
+
+做法：每域**等字數預算**（避免長文壓過對話語料），用**目標模型自己的 tokenizer** 統計，
+取前 32K，bos/eos 強制保留。新詞表 32,000 個 id 中有 **27,134 個含 CJK（84.8%）**。
+
+在 8 個真實負載探針的 2002 個 step 上評估（純查表，不需載入模型）：
+
+| | 現行 v8 32K | 重建 32K |
+|---|---:|---:|
+| 中文 token 命中率 | 0.011 | **0.974** |
+| ASCII token 命中率 | 0.499 | **0.900** |
+| 整體 | 0.245 | **0.939** |
+| 加速上限 | 1.11x | **1.73x** |
+
+唯一退步是 `zh_tech`（整段用英文思考）0.813 → 0.797，其餘全部大幅提升。
+
+這是**上限**而非 p0：v8 目前把覆蓋率轉成接受率的效率約 40%（code 0.77 → p0 0.32）。
+若新頭維持同樣效率，p0 約 0.37 → **1.22x**，已超過 G4 的 1.19x。
+
 ### 3. G0：特徵自洽（通過）
 
 `layer_inp[0]` 就是 embedding 之後、第一層 attention 之前的 hidden state，因此必須等於 `llama_model_get_tok_embd_rows()` 的同一列：

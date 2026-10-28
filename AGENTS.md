@@ -148,7 +148,11 @@ token（4.1%）在集合內，`，`/`的`/`在`/`。`/`有` 全部缺席；重�
 現行詞表的問題不只是「沒有中文」：按 token 種類分解 2002 個真實使用 step，
 含 CJK 的 token（52.0%）只有 **1.1%** 命中，純 ASCII 的 token（48.0%）也只有 **49.9%** 命中。
 加總 coverage **0.245** → 1.11x，低於 G4 的 1.19x。但同一批 step 只用到 722 個相異 token，
-可見 32K 的**容量**足夠，問題在**選字**。重建後預期可達 0.9 以上。
+可見 32K 的**容量**足夠，問題在**選字**。
+
+已用公開語料（COIG-CQIA / firefly / zh-wikipedia / llama.cpp 原始碼）重建一版 32K 詞表並驗證：
+新詞表 84.8% 的 id 含 CJK，同一批 step 的 coverage **0.245 → 0.939**（上限 1.73x）。
+選字工具見 `scripts/build_vocab.py`、`scripts/eval_vocab.py`，流程見 `docs/notes.md` §2c。
 `d2t` 張量的 `ne[0]` 決定 draft 詞表大小（`src/models/eagle3.cpp:47`），
 所以調整詞表大小**不需要改 runtime**，但 `lm_head` 的行語意會變（不可 warm-start）。
 
