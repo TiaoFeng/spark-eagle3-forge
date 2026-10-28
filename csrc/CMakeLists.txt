@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Lets editors (cpptools) resolve llama.h without knowing LLAMACPP_ROOT: the
+# generated compile_commands.json carries the absolute -I paths.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # LLAMACPP_ROOT must point at a llama.cpp checkout that has been built with
 # GGML_CUDA=ON and that carries the spark2_5 t_layer_inp patch.
 if(NOT DEFINED LLAMACPP_ROOT)

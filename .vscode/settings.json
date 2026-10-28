@@ -1,3 +1,5 @@
 {
-    "cmake.sourceDirectory": "${workspaceFolder}/csrc"
+    "cmake.sourceDirectory": "${workspaceFolder}/csrc",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/csrc/build/compile_commands.json",
+    "C_Cpp.default.cppStandard": "c++17"
 }
