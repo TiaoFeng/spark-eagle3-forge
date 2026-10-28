@@ -366,6 +366,165 @@ project exists for. G4 keeps its original value, so the ship criterion did not g
 
 ---
 
+## 7. S2a: the training run and the gates
+
+### 7a. What actually ran
+
+`spark_eagle3/train.py`, one process, eight segments, 1000 optimiser steps each:
+
+| Item | Value |
+|---|---|
+| corpus | COIG-CQIA 35% / firefly 35% / zh-wikipedia 20% / llama.cpp `src` 10% (by token quota) |
+| unique tokens | 8 × 1,000,000 = **8.0M** |
+| chunk | 2048, four domains extracted separately with disjoint character offsets per segment |
+| sample | 2 sequences × 1024 tokens per step = 2048 tokens/step, windows never cross a chunk |
+| steps | 8000 → 16.4M token updates, **2.05 epochs per segment** |
+| optimiser | AdamW, lr 1e-4 cosine to 10%, betas (0.9, 0.95), wd 0.01, grad clip 1.0, bf16 autocast |
+| loss | `CE(argmax) + 0.5 · CE(training-time test)` |
+| label coverage | 0.944–0.993 per domain-segment; masked fraction during training 0.7–2.9% |
+| checkpoint | every 500 steps (parameters only), full state after each segment |
+| wall clock | 68 min (extraction 42 min at ~3150 tok/s, training 26 min at ~10.6k tok/s) |
+| train curve | CE 8.37 → 2.14, top-1 0.168 → 0.614 |
+
+`lambda = 0.5` was chosen because the published head's `train_log.json` carries no
+hyper-parameters at all (only `steps`, `params`, `coverage`, `history`), so there was nothing to
+read it from.
+
+**Why eight segments and not four.** The first attempt used four segments of 700K tokens, i.e. 5.9
+epochs per segment. Within 2000 steps the training CE fell to 0.15 at top-1 0.97 while the held-out
+CE of that segment rose 5.45 → 6.33: the head had memorised 700K tokens and stopped generalising. It
+also died between segments (the VRAM bug in §7b), which made re-cutting the run cheap. The same
+8000 steps over 8M unique tokens instead of 2.8M end at CE 2.14 / top-1 0.614, which is a healthy
+distance from the ceiling, and `p0` on the real prompts kept improving to the last checkpoint.
+
+### 7b. Two bugs the run exposed
+
+**Scratch row overrun (fixed).** `sp_decode()` writes one row per *decoded* token, i.e. `take + 1`
+rows for a chunk, but `extract_into()` reserved only `take`. The released CLI never noticed because
+`--capacity-gib 2.0` always left slack; a segment sized to exactly `tokens_per_segment` rows walked
+one row off the end of the mmap and took SIGSEGV. Capacity is now `tokens + 8` rows and the check
+asks for `take + 1`.
+
+**VRAM handover (fixed).** Extraction needs the 4B target (~6 GiB) and training needs the head plus
+two AdamW moments (~4 GiB); on a 12 GiB card they cannot be resident together. Segment 0 was fine
+because at that point only the parameters existed, so segment 1 died in `llama_init_from_model`. The
+driver now parks the head and the optimiser state on the CPU for the duration of each extraction and
+recreates the embedding table from the shim afterwards.
+
+### 7c. Checkpoint curve
+
+Four prompts, protocol P (`--n-gen 256`, greedy), the same checkpoints the run saved:
+
+| step | chat_think | code | zh_daily | zh_tech |
+|---|---:|---:|---:|---:|
+| v8 (v8 vocab) | 0.2461 | 0.1992 | 0.0000 | 0.3203 |
+| 500 | 0.3242 | 0.2422 | 0.1602 | 0.3594 |
+| 1500 | 0.3008 | 0.2109 | 0.1953 | 0.3477 |
+| 3000 | 0.3164 | 0.2031 | 0.1641 | 0.3438 |
+| 5000 | 0.2930 | 0.2500 | 0.2461 | 0.3672 |
+| 8000 (final) | 0.3281 | 0.2070 | 0.2891 | 0.3516 |
+
+Two things to read out of it:
+
+- **Almost all of the gain arrives by step 500.** `chat_think` jumps 0.246 → 0.324 within one
+  segment, then sits inside the ±0.03 noise band for the remaining 7500 steps. The 27,757
+  re-initialised `lm_head` rows are the whole story: once they have seen a few hundred steps of
+  their own language, the head can use them.
+- **Only `zh_daily` keeps climbing** (0.16 → 0.29), which is the most purely Chinese register of the
+  four. Registers that already worked (code, `zh_tech`, English-ish thinking) do not improve further.
+
+The within-segment validation loss is *not* a usable selection signal here: it drifts up inside every
+segment (4.40 → 4.60 CE in segment 0, and the same shape seven more times) even though `p0` on the
+real prompts ends higher than it started. Each segment validates against its own held-out slice, so
+only the prompt-driven `p0` is comparable across segments.
+
+### 7d. Gates (protocol P, `--n-gen 256`, greedy)
+
+`rendered`, the six fixed workloads:
+
+| workload | v8 | S2a | change | coverage (v8 → S2a) |
+|---|---:|---:|---:|---|
+| chat_think | 0.2461 | **0.3281** | +0.082 | 0.734 → 0.789 |
+| chat_nothink | 0.0441 | **0.2353** | +0.191 | 0.066 → 0.956 |
+| prose_think | 0.0469 | **0.3086** | +0.262 | 0.094 → 0.957 |
+| prose_nothink | 0.0000 | **0.2024** | +0.202 | 0.030 → 0.982 |
+| code | 0.1992 | **0.2070** | +0.008 | 0.590 → 0.668 |
+| copy | 0.1562 | **0.2031** | +0.047 | 0.547 → 0.793 |
+| **mean** | **0.1154** | **0.2474** | +0.132 | 0.343 → 0.858 |
+
+`realistic`, the eight Chinese thinking prompts:
+
+| prompt | v8 | S2a | change | coverage (v8 → S2a) |
+|---|---:|---:|---:|---|
+| zh_advice | 0.0273 | **0.2500** | +0.223 | 0.055 → 0.984 |
+| zh_code | 0.2930 | 0.2852 | −0.008 | 0.680 → 0.688 |
+| zh_daily | 0.0000 | **0.2891** | +0.289 | 0.000 → 0.996 |
+| zh_math | 0.3205 | **0.3675** | +0.047 | 0.603 → 0.842 |
+| zh_rewrite | 0.0508 | **0.3750** | +0.324 | 0.070 → 0.953 |
+| zh_summary | 0.0469 | **0.4141** | +0.367 | 0.074 → 0.996 |
+| zh_tech | 0.3203 | **0.3516** | +0.031 | 0.793 → 0.801 |
+| zh_translate | 0.1250 | **0.1944** | +0.069 | 0.597 → 0.799 |
+| **mean of 8** | **0.1480** | **0.3159** | +0.168 | 0.359 → 0.882 |
+
+Verdicts against §6:
+
+| Gate | Threshold | Measured | Verdict |
+|---|---|---:|---|
+| G3 probe | `chat_think` ≥ 0.25 | 0.3281 | **pass** |
+| G3b no forgetting | `code` ≥ 0.18, `copy` ≥ 0.13 | 0.2070 / 0.2031 | **pass** |
+| G3c the point | realistic mean ≥ 0.25 | 0.3159 | **pass** |
+| G4 ship | `chat_think` ≥ 0.33 | 0.3281 | **miss by 0.002** |
+
+G4 is a genuine miss, not a rounding argument: the pre-registered number for `chat_think` on
+protocol P is 0.33 and the head reaches 0.3281, which is 1.186x rather than 1.19x. It is inside the
+±0.03 noise of the measurement, so the same head would clear it on a rerun about half the time — but
+the gate was fixed before the run and it is recorded as missed.
+
+### 7e. G2 export, and an online A/B against v8
+
+`spark_eagle3/export_gguf.py` writes `spark-eagle3-s2a.gguf` (422 MB, 14 tensors, bf16 matmuls and
+F32 norms). The round-trip check compares every tensor against the checkpoint and `d2t` exactly; the
+two conventions it has to reproduce (`d2t` absolute, `attn_q`/`attn_k` rope-permuted) are documented
+in the module. llama.cpp loads it without an assert (`draft acceptance` is printed), so **G2 passes**.
+
+The same five prompts, both heads, `--spec-type draft-eagle3 --spec-draft-n-max 1`, greedy, 128
+tokens, 4096 context:
+
+| prompt | v8 online | S2a online | change |
+|---|---:|---:|---:|
+| zh_daily | 0.0080 | **0.2857** | +0.278 |
+| zh_rewrite | 0.0328 | **0.4157** | +0.383 |
+| zh_summary | 0.0328 | **0.4270** | +0.394 |
+| zh_tech | 0.3404 | 0.3125 | −0.028 |
+| chat_think | 0.3263 | 0.2990 | −0.027 |
+| **mean of 5** | **0.1481** | **0.3480** | +0.200 |
+
+Wall clock over the same 5 × 128 tokens: **12.6 ms/token → 10.6 ms/token, 1.19x**. That is the first
+end-to-end confirmation on this machine that the p0 gains convert into decode speed, and it agrees
+with $(1+0.348)/1.12 = 1.20$.
+
+Offline versus online for the new head at the matched generation length (128): `chat_think` 0.3359 vs
+0.2990, `zh_tech` 0.3516 vs 0.3125, `zh_daily` 0.2656 vs 0.2857 → mean absolute difference 0.032,
+the same order as v8's 0.029 in §5c. The export reproduces the PyTorch head; the residual gap is the
+offline scorer counting every position while llama.cpp counts verification steps.
+
+### 7f. What the numbers say
+
+- **The vocabulary was the whole problem, exactly as §2 predicted.** Every register whose ceiling
+  was limited by coverage moved by roughly what the coverage gain allows; the two registers that were
+  already at 0.79–0.80 coverage (`zh_tech`, `zh_code`) did not move.
+- **The cost is a small regression on English-heavy thinking.** `chat_think` and `zh_tech` are the
+  only prompts that lost p0 (−0.027/−0.028 online), and they are the two where v8's ASCII vocabulary
+  was already well suited. Trading ~0.03 there for +0.28…+0.39 on Chinese is the right trade for
+  this project, but it means the new head should not be shipped to a purely English workload.
+- **`code` is flat** (0.1992 → 0.2070). It was not the target, and only 10% of the tokens were code;
+  the earlier hope that the 4,243 shared `lm_head` rows would preserve it exactly holds, but no more.
+- **More steps buy Chinese small talk, not thinking.** `zh_daily` is the only held-out register that
+  improved monotonically, which points at S2b (Chinese thinking traces) rather than more steps of the
+  same data for a further gain.
+
+---
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **resolved in §2c**: the rebuilt 32K vocabulary reaches 0.939
@@ -377,8 +536,20 @@ project exists for. G4 keeps its original value, so the ship criterion did not g
 3. **Contiguous KV within a chunk**: keeping it is closer to live long-context behaviour, but the
    nine full-attention layers slow down with depth; resetting per chunk truncates the first 512
    tokens of context.
+4. **How much of the remaining gap is data volume?** 2.05 epochs per segment is still repetition;
+   §7c shows the gain saturating by step 500, so the next marginal step is *more unique tokens*
+   (S3, 22M) rather than more steps.
+5. **`lambda` for the training-time test**: 0.5 was a guess (§7a). A/B it now that the pipeline is
+   cheap: two 2000-step runs with 0 and 1.0 would bracket the useful range.
 
 ## Next step
 
-S2a: implement `spark_eagle3/train.py`, extract 2.79M tokens of features, train 8k steps, then
-measure G3 (`chat_think` ≥ 0.25) and G3b (`code` ≥ 0.356) with `eval_p0.py`.
+S2a is done (§7). The next decision is between two paths, and they are not exclusive:
+
+- **S3 (scale)**: 22M unique tokens instead of 8M. Extraction is the cost (~2 h at 3.1k tok/s) and
+  the 8 GiB-per-segment layout does not change. This is the only lever that addresses
+  question 4.
+- **S2b (register)**: §7c shows the gain concentrating in registers that were *coverage*-limited,
+  and `zh_daily` — the most purely Chinese prompt — still improving at step 8000. Generating
+  Chinese thinking traces and adding them as a fifth domain targets the register that v8 handles
+  worst instead of adding more of the same text.

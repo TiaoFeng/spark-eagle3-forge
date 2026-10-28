@@ -70,6 +70,10 @@ aggregate **0.245**, below the 0.33 that G4 needs.
 Those same steps use only 722 distinct tokens, so **32K is ample; the problem is which tokens were
 picked**. A rebuilt 32K vocabulary (84.8% of its ids contain CJK) lifts coverage **0.245 → 0.939**.
 
+Measured afterwards (`notes.md` §7d): the head trained on that vocabulary reaches p0 **0.3159** on
+the same eight prompts, i.e. it converts about a third of its enlarged ceiling, not the 40% that v8
+managed. Coverage is a necessary condition, not a promise.
+
 `d2t`'s `ne[0]` sets the draft vocabulary size (`src/models/eagle3.cpp:47`), so changing it **needs
 no runtime change**, but the rows of `lm_head` change meaning → no warm start for those rows, they
 have to be retrained.

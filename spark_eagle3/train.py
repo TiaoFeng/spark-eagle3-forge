@@ -127,6 +127,30 @@ def target_embeddings(shim: Shim, dtype=torch.bfloat16) -> torch.Tensor:
     return out
 
 
+def park(model, opt) -> None:
+    """Move the head and its optimiser state off the GPU.
+
+    The target model needs ~6 GiB of VRAM for feature extraction and the head in
+    training state holds ~4 GiB (fp32 parameters, gradients, two AdamW moments).
+    They cannot be resident together on a 12 GiB card, so extraction and training
+    alternate ownership of the GPU.
+    """
+    model.to("cpu")
+    for state in opt.state.values():
+        for k, v in list(state.items()):
+            if torch.is_tensor(v):
+                state[k] = v.to("cpu")
+    torch.cuda.empty_cache()
+
+
+def unpark(model, opt, device) -> None:
+    model.to(device)
+    for state in opt.state.values():
+        for k, v in list(state.items()):
+            if torch.is_tensor(v):
+                state[k] = v.to(device)
+
+
 def save_checkpoint(path: pathlib.Path, model, cfg_json, d2t, *, step, segment,
                     optimizer=None, extra=None):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -402,13 +426,19 @@ def main() -> int:
         # chunk of each domain therefore reaches seg_tokens + 1 at worst
         capacity = (seg_tokens + 8) * row_bytes(len(layers), cfg["hidden_size"])
 
+        # the target model cannot share the card with the head's optimiser state
+        park(model, opt)
+        if emb is not None:
+            del emb
+            emb = None
+            torch.cuda.empty_cache()
+
         t0 = time.time()
         shim = Shim(args.model, n_gpu_layers=args.n_gpu_layers,
                     n_ctx=args.chunk + 1, n_batch=args.chunk + 1)
         shim.set_layers(layers)
-        if emb is None:
-            emb = target_embeddings(shim)
-            print("token_embd: %.0f MB on GPU" % (emb.numel() * 2 / 2**20), flush=True)
+        emb = target_embeddings(shim)
+        print("token_embd: %.0f MB on GPU" % (emb.numel() * 2 / 2**20), flush=True)
         store = FeatureStore(capacity, len(layers), cfg["hidden_size"])
         store.require(seg_tokens + 1)
 
@@ -439,6 +469,7 @@ def main() -> int:
         shim.close()
         del shim
         torch.cuda.empty_cache()
+        unpark(model, opt, device)
 
         # hold out every Nth chunk so the validation set covers all domains
         if args.val_chunk_every > 0:
