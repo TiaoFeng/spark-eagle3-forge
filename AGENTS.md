@@ -306,6 +306,9 @@ spark-eagle3-forge/
 | G3b 不遺忘 | `code` p0 **不低於 0.356** | 過擬合或災難性遺忘 |
 | G4 上線標準 | `chat_think` p0 ≥ **0.33**（→ 1.19x） | 才值得換掉 v8 |
 
+**已通過**：G0（特徵自洽，max\|diff\| 3e-4）、G1（平均離線 0.147 vs 線上 0.133，差 0.014；
+見 `docs/notes.md` §5c）。G0/G1 都不需要訓練，用現成的 v8 頭即可複驗。
+
 `n-max` 一律固定 1；greedy 為主，probabilistic 只在 temp=1.0 時作對照。
 
 ---

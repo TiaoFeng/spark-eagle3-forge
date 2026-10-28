@@ -58,6 +58,8 @@ def _bind(lib: C.CDLL) -> None:
         "sp_n_embd": (C.c_int32, [C.c_void_p]),
         "sp_n_vocab": (C.c_int32, [C.c_void_p]),
         "sp_n_layer": (C.c_int32, [C.c_void_p]),
+        "sp_n_ctx": (C.c_int32, [C.c_void_p]),
+        "sp_n_batch": (C.c_int32, [C.c_void_p]),
         "sp_set_layers": (C.c_int32, [C.c_void_p, C.POINTER(C.c_int32), C.c_int32]),
         "sp_n_layer_feat": (C.c_int32, [C.c_void_p]),
         "sp_layers": (C.POINTER(C.c_int32), [C.c_void_p]),
@@ -71,8 +73,7 @@ def _bind(lib: C.CDLL) -> None:
                                   C.POINTER(C.c_float), C.c_int32]),
         "sp_logits": (C.POINTER(C.c_float), [C.c_void_p, C.c_int32]),
         "sp_token_to_piece": (C.c_int32, [C.c_void_p, C.c_int32, C.c_char_p, C.c_int32]),
-        "sp_is_eog": (C.c_int32, [C.c_void_p, C.c_int32]),
-        "sp_reset": (None, [C.c_void_p]),
+        "sp_is_eog": (C.c_int32, [C.c_void_p, C.c_int32]),        "sp_reset": (None, [C.c_void_p]),
         "sp_sync": (None, [C.c_void_p]),
     }
     for name, (restype, argtypes) in sig.items():
@@ -137,6 +138,14 @@ class Shim:
     def n_layer(self) -> int:
         return int(self._lib.sp_n_layer(self._h))
 
+    @property
+    def n_ctx(self) -> int:
+        return int(self._lib.sp_n_ctx(self._h))
+
+    @property
+    def n_batch(self) -> int:
+        return int(self._lib.sp_n_batch(self._h))
+
     # -- tokenizer ---------------------------------------------------------
     def tokenize(self, text: str | bytes, *, add_special: bool = False) -> np.ndarray:
         raw = text.encode("utf-8") if isinstance(text, str) else text
@@ -159,6 +168,17 @@ class Shim:
         buf = C.create_string_buffer(256)
         n = self._lib.sp_token_to_piece(self._h, int(token), buf, 256)
         return buf.raw[:n] if n > 0 else b""
+
+    def tok_embd_rows(self, tokens: np.ndarray, out: np.ndarray) -> np.ndarray:
+        """F32 token embedding rows of the target model, written into `out`."""
+        toks = np.ascontiguousarray(tokens, dtype=np.int32)
+        got = self._lib.sp_tok_embd_rows(
+            self._h, toks.ctypes.data_as(C.POINTER(C.c_int32)), int(toks.size),
+            out.ctypes.data_as(C.POINTER(C.c_float)))
+        if got != toks.size:
+            raise RuntimeError("tok_embd_rows failed: " +
+                               self._lib.sp_last_error(self._h).decode())
+        return out
 
     # -- feature extraction ------------------------------------------------
     def set_layers(self, layers) -> None:
@@ -194,3 +214,6 @@ class Shim:
 
     def reset(self) -> None:
         self._lib.sp_reset(self._h)
+
+    def is_eog(self, token: int) -> bool:
+        return bool(self._lib.sp_is_eog(self._h, int(token)))

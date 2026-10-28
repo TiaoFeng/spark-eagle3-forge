@@ -64,8 +64,8 @@ class Attention(nn.Module):
                                                            dtype=torch.float32) / d))
         freqs = torch.outer(positions.to(torch.float32), inv_freq)  # [n, d/2]
         emb = torch.cat((freqs, freqs), dim=-1)                     # [n, d]
-        cos = emb.cos()[None, :, None, :]
-        sin = emb.sin()[None, :, None, :]
+        cos = emb.cos()[None, :, None, :].to(x.dtype)
+        sin = emb.sin()[None, :, None, :].to(x.dtype)
         return x * cos + rotate_half(x) * sin
 
     def forward(self, x: torch.Tensor, positions: torch.Tensor,
@@ -113,12 +113,15 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(hidden, cfg["rms_norm_eps"])
         self.mlp = MLP(hidden, cfg["intermediate_size"])
 
-    def forward(self, input_embeds: torch.Tensor, hidden_states: torch.Tensor,
+    def forward(self, token_embeds: torch.Tensor, g_embd: torch.Tensor,
                 positions: torch.Tensor, attn_mask: torch.Tensor | None = None):
-        residual = input_embeds
-        x = self.input_layernorm(input_embeds)
-        h = self.hidden_norm(hidden_states)
-        x = torch.cat((x, h), dim=-1)
+        # Matches llama.cpp's eagle3 decoder graph exactly:
+        #   residual = g_embd (raw fc output, norm_before_residual == false)
+        #   x = cat(rmsnorm(token_embeds, attn_norm), rmsnorm(g_embd, attn_norm_2))
+        residual = g_embd
+        e = self.input_layernorm(token_embeds)
+        h = self.hidden_norm(g_embd)
+        x = torch.cat((e, h), dim=-1)
         x = self.self_attn(x, positions, attn_mask)
         x = residual + x
         residual = x
@@ -139,11 +142,21 @@ class Eagle3Head(nn.Module):
         self.norm = RMSNorm(hidden, cfg["rms_norm_eps"])
         self.lm_head = nn.Linear(hidden, cfg["draft_vocab_size"], bias=False)
 
-    def forward(self, features: torch.Tensor, hidden_states: torch.Tensor,
+    def forward(self, features: torch.Tensor, token_embeds: torch.Tensor,
                 positions: torch.Tensor, attn_mask: torch.Tensor | None = None):
-        x = self.fc(features)
-        x = self.midlayer(x, hidden_states, positions, attn_mask)
-        return self.norm(x)
+        """features: target layer inputs; token_embeds: embedding of token[p+1].
+
+        Accepts [n, dim] or [b, n, dim]; the batch axis is optional so replaying a
+        single sequence does not need dummy dimensions.
+        """
+        squeeze = features.dim() == 2
+        if squeeze:
+            features = features.unsqueeze(0)
+            token_embeds = token_embeds.unsqueeze(0)
+        g = self.fc(features)
+        x = self.midlayer(token_embeds, g, positions, attn_mask)
+        x = self.norm(x)
+        return x.squeeze(0) if squeeze else x
 
 
 def config_from_json(cfg: dict) -> dict:

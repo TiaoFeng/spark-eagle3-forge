@@ -26,9 +26,12 @@ PATTERNS=(
   # e-mail addresses
   '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
   # private / link-local IPs
-  '\b(10|127)\.[0-9]+\.[0-9]+\.[0-9]+'
+  # note: 127.0.0.0/8 is loopback and says nothing about the machine, so it is
+  # deliberately not matched -- test harnesses bind to it everywhere.
+  '\b10\.[0-9]+\.[0-9]+\.[0-9]+'
   '\b192\.168\.[0-9]+\.[0-9]+'
   '\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+'
+  '\b169\.254\.[0-9]+\.[0-9]+'
   # GPU / disk model names
   '(RTX|GTX|Radeon RX|Arc) ?[0-9]{3,4}'
   '[0-9]+\.[0-9]+ ?TFLOP'

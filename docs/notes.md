@@ -148,6 +148,37 @@ llama.cpp 由 `d2t` 張量的 `ne[0]` 決定 draft vocab 大小（`src/models/ea
 重疊只有 13% 是預期結果：v8 的 32K 幾乎全是 ASCII，新詞表 84.8% 是 CJK。
 但這 4,243 列已覆蓋真實負載中 90% 的 ASCII token，所以 code／英文能力不會歸零。
 
+### 5c. G1：離線 p0 ≈ 線上 p0（通過）
+
+比較方式：同一組 prompt、同一份 v8 頭、兩邊都跑 greedy（temp 0）。
+
+- 離線：`spark_eagle3/eval_p0.py` — 用 libllama 產生 greedy 序列，同時把每列特徵寫進 memfd，
+  再用 PyTorch 重放 draft 前向，取 32K draft vocab 的 argmax 經 `d2t` 映回 target id。
+- 線上：`scripts/g1_online.py` — 啟動 `llama-server`（`--spec-type draft-eagle3 --spec-draft-n-max 1`），
+  對同一批 prompt 送 `/completion`，解析 `draft acceptance` 那一行。
+
+| prompt | 離線 p0 | 線上 p0 | 差 | coverage |
+|---|---:|---:|---:|---:|
+| chat_think | 0.2891 | 0.3263 | +0.037 | 0.828 |
+| chat_nothink | 0.0391 | 0.0244 | −0.015 | 0.063 |
+| prose_think | 0.0547 | 0.0413 | −0.013 | 0.117 |
+| code | 0.1172 | 0.1053 | −0.012 | 0.625 |
+| copy | 0.2344 | 0.1651 | −0.069 | 0.742 |
+| **平均** | **0.1469** | **0.1325** | **−0.014** | 0.475 |
+
+判準（平均差 < 0.03）：**通過**——總體差 **0.0144**，逐項平均絕對差 0.0293。
+
+差異來源（不影響結論，但值得記著）：
+
+1. llama.cpp 每個驗證步只驗 1 個 draft，接受後的那個 bonus token 不計入 draft 統計，
+   所以線上樣本步數 ≈ 生成 token 數 ÷ 平均接受長度（95 步 / 126 token）；離線重放則是每個位置都算。
+2. greedy 路徑在 fp32 CPU 與 bf16 GPU 之間會有輕微分歧，序列一旦分岔後續位置就不可比。
+3. `copy` 是逐字重述，draft 特別強，小分歧被放大，是唯一的離群值（−0.069）。
+
+結論：**特徵抽取 → head 前向 → d2t → 標籤語意整條鏈是對的**。
+G1 的用途是抓「層索引錯、shift 錯位、d2t 接反」這類致命錯誤，這些都會讓 p0 變成 0 或隨機；
+現在五個語域的大小關係與量級都與線上一致。
+
 ### 3. G0：特徵自洽（通過）
 
 `layer_inp[0]` 就是 embedding 之後、第一層 attention 之前的 hidden state，因此必須等於 `llama_model_get_tok_embd_rows()` 的同一列：
