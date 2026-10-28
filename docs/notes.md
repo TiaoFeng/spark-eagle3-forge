@@ -20,26 +20,41 @@
 - `t2d` 對集合外的 99,072 個 id **全部填 0**（佔位值，不是 `-1`）。llama.cpp **不讀 `t2d`**，只用 `d2t` 走 `ggml_set_rows` 散射，非 draft 詞表的 logits 一律設 `-INFINITY`（`src/models/eagle3.cpp:307`）。
 - 官方 `llama.cpp-spark2_5-layer-inputs.patch` 與本機分支的改動**語意相同**（本機多 3 行註解），patch 正確性不必再懷疑。
 
-### 2. 硬性上限：draft 詞表只有 32K
+### 2. 硬性上限：draft 詞表只有 32K，而且幾乎不含中文
 
 EAGLE-3 head 的輸出維度是 32000，驗證端只會看到這 32000 個候選。因此
 
 $$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vocab}\big]$$
 
-實測（Q6_K，每份 512 token，`layers=[2]`，只算 argmax 不算特徵）：
+量測方式：`sp_gen_cli` 用**模型自己的 chat template** 生成 256 token（temp 0.7、top-p 0.9），
+逐 token 比較「實際取樣到的 token」與「argmax」是否落在 32K 集合內；
+再用 `sp_feat_cli --text` 對生成出的文字做一次靜態量測交叉驗證（兩者差異 < 0.02）。
 
-| 語料 | coverage@32K |
-|---|---:|
-| 中文技術散文（`AGENTS.md` 全文前 512 token） | **0.3047** |
-| C++ 原始碼（`llama-context.cpp`） | 0.5566 |
+| 工作負載（生成 256 token） | sampled in-set | argmax in-set |
+|---|---:|---:|
+| chat_think（數學推理，ASCII/LaTeX 多） | 0.8008 | 0.7891 |
+| chat_nothink（中文閒聊） | 0.0769 | 0.0705 |
+| prose_think（中文散文，thinking） | 0.0391 | 0.0391 |
+| prose_nothink（中文散文，不 thinking） | 0.0465 | 0.0407 |
+| code | 0.7734 | 0.7695 |
+| copy | 0.5430 | 0.5508 |
 
-推論：
+根本原因不是「語域差距」，是**詞表本身不含中文**：
 
-- 中文散文的 p0 **結構上不可能超過 0.30**（實測 0.013，代表模型本身也差，但天花板先鎖住了）。
-- code 的天花板約 0.56，實測 p0 0.324 → 已用掉天花板的 58%。
-- G4 要求 `chat_think` p0 ≥ 0.33；若該語域 coverage < 0.33，**只靠微調不可能達標**，必須換詞表。
+- 一段 171 token 的中文散文 prompt，只有 **7 個** token 在 32K 集合內（4.1%），而且全是空白與 ASCII。
+- `，`(280)、`的`(276)、`在`(397)、`。`(302)、`有`(5053) **全部不在**集合內。
+- 我們用 `target[i] = d2t[i] + i` 重建的 id 與 **官方 GGUF 內的 `d2t` 完全相同**（逐元素比對通過），所以不是解讀錯誤。
+- 早期用靜態文字量到的「中文 0.30」是誤導：`AGENTS.md` 內含大量英文、路徑、表格與程式碼，這些才是命中的那一批。
+
+推論（這改變了專案方向）：
+
+- 中文散文的 p0 天花板 **≈ 0.04**（實測 0.013，已接近上限）。
+- `chat_think` 的 0.79 是**數學題偏 ASCII** 造成的假象；真正的中文 thinking trace 預期也在 0.05–0.15。
+- 也就是說：**只微調現有 head，中文幾乎不可能改善**。G4（`chat_think` p0 ≥ 0.33）在不換詞表的前提下達不到。
+- 唯一有效的槓桿是**重建 `d2t` 讓它涵蓋 CJK**。
 
 換詞表的成本結構（重要）：
+
 
 | 方案 | `lm_head` 形狀 | 可 warm-start 的部分 |
 |---|---|---|

@@ -135,9 +135,16 @@ runtime 用 `d2t` 把這 32000 個 logits 散射回 131072 的 target 詞表，�
 
 $$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vocab}\big]$$
 
-實測 coverage@32K（Q6_K、512 token）：中文技術散文 **0.30**、C++ 原始碼 **0.56**。
-→ 中文散文的 p0 **結構上不可能超過 0.30**；若某語域的 coverage < G4 門檻，**微調再久也達不到**，
-只能換詞表。`d2t` 張量的 `ne[0]` 決定 draft 詞表大小（`src/models/eagle3.cpp:47`），
+實測 coverage@32K（Q6_K，`sp_gen_cli` 用模型自己的 chat template 生成 256 token、temp 0.7）：
+中文散文 **0.04**、中文閒聊 **0.08**、中文數學 thinking **0.79**、code **0.77**、copy **0.54**。
+
+根因不是語域差距，而是**這個 32K 詞表幾乎不含中文**：一段 171 token 的中文 prompt 只有 7 個
+token（4.1%）在集合內，`，`/`的`/`在`/`。`/`有` 全部缺席；重建的 id 與官方 GGUF 的 `d2t` 逐元素相同。
+中文數學之所有有 0.79，是因為該樣本以 ASCII/LaTeX 為主——這不是 Chinese thinking 的代表值。
+
+→ **只微調現有頭，中文 p0 不可能顯著改善**（天花板 ≈ 0.04–0.08，實測散文 0.013 已接近上限）。
+要提升中文必須**重建 `d2t` 讓它涵蓋 CJK**，並重訓 `lm_head`。
+`d2t` 張量的 `ne[0]` 決定 draft 詞表大小（`src/models/eagle3.cpp:47`），
 所以調整詞表大小**不需要改 runtime**，但 `lm_head` 的行語意會變（不可 warm-start）。
 
 > 詳細量測與 `d2t` / `t2d` 語意見 `docs/notes.md`。
