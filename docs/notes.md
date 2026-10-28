@@ -130,6 +130,24 @@ llama.cpp 由 `d2t` 張量的 `ne[0]` 決定 draft vocab 大小（`src/models/ea
 這是**上限**而非 p0：v8 目前把覆蓋率轉成接受率的效率約 40%（code 0.77 → p0 0.32）。
 若新頭維持同樣效率，p0 約 0.37 → **1.22x**，已超過 G4 的 1.19x。
 
+### 2d. 新詞表的 warm-start 檢查點
+
+`spark_eagle3/model.py` 的參數名稱與 v8 safetensors 完全一致（`fc` / `midlayer.*` / `norm` / `lm_head`），
+所以發布的檢查點可以用 `strict=True` 載入，匯出時也不需要名稱對照表。
+
+`scripts/init_head.py` 把 v8 的 13 個參數張量原樣搬進新模型，只重建 `lm_head`：
+新舊詞表重疊的 token 沿用 v8 的列，其餘以小隨機權重初始化。
+
+| 項目 | 值 |
+|---|---:|
+| 沿用 v8 的 `lm_head` 列 | 4,243 / 32,000（13.3%） |
+| 重新初始化 | 27,757 |
+| 參數量 | 218.2M |
+| 前向 smoke | `[2,8,7680]` → `[2,8,2560]` → logits `[2,8,32000]`，全 finite |
+
+重疊只有 13% 是預期結果：v8 的 32K 幾乎全是 ASCII，新詞表 84.8% 是 CJK。
+但這 4,243 列已覆蓋真實負載中 90% 的 ASCII token，所以 code／英文能力不會歸零。
+
 ### 3. G0：特徵自洽（通過）
 
 `layer_inp[0]` 就是 embedding 之後、第一層 attention 之前的 hidden state，因此必須等於 `llama_model_get_tok_embd_rows()` 的同一列：

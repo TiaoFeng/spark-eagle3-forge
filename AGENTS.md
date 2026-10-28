@@ -153,6 +153,7 @@ token（4.1%）在集合內，`，`/`的`/`在`/`。`/`有` 全部缺席；重�
 已用公開語料（COIG-CQIA / firefly / zh-wikipedia / llama.cpp 原始碼）重建一版 32K 詞表並驗證：
 新詞表 84.8% 的 id 含 CJK，同一批 step 的 coverage **0.245 → 0.939**（上限 1.73x）。
 選字工具見 `scripts/build_vocab.py`、`scripts/eval_vocab.py`，流程見 `docs/notes.md` §2c。
+`scripts/init_head.py` 會把 v8 其餘參數原樣搬過去，只重建 `lm_head`（4,243 列沿用、27,757 列重新初始化）。
 `d2t` 張量的 `ne[0]` 決定 draft 詞表大小（`src/models/eagle3.cpp:47`），
 所以調整詞表大小**不需要改 runtime**，但 `lm_head` 的行語意會變（不可 warm-start）。
 
@@ -172,7 +173,7 @@ token（4.1%）在集合內，`，`/`的`/`在`/`。`/`有` 全部缺席；重�
 | 特徵存放 | **memfd（`os.memfd_create`）+ mmap** | 純 RAM、**不受 tmpfs 配額限制**、不寫 NVMe、不需 root。超量行為是 OOM（故須前置檢查容量） |
 | 單輪容量 | **40 GiB ≈ 2.79M token** | RAM 可用量 − ~10 GiB 訓練固定開銷，再留 3 GiB 餘裕（本機值見 `AGENTS.local.md`） |
 | 分段方式 | 每段 extract → train → **立刻存 checkpoint** | 記憶體特徵行程死掉即遺失，最壞只損失一段 forward（約 12 分鐘） |
-| 起點 | warm-start v8 safetensors | 保留既有 code/英文能力，避免災難性遺忘 |
+| 起點 | warm-start v8 safetensors，**但 `lm_head` 必須重訓** | 保留既有 code/英文能力；新舊詞表只有 4,243/32,000 列重疊（§2.7），其餘列重新初始化 |
 
 ### 為何不用「轉 BF16 safetensors + transformers」
 
