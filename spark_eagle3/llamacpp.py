@@ -159,3 +159,38 @@ class Shim:
         buf = C.create_string_buffer(256)
         n = self._lib.sp_token_to_piece(self._h, int(token), buf, 256)
         return buf.raw[:n] if n > 0 else b""
+
+    # -- feature extraction ------------------------------------------------
+    def set_layers(self, layers) -> None:
+        """Arm layer-input extraction. Must run before the first decode()."""
+        arr = np.ascontiguousarray(layers, dtype=np.int32)
+        rc = self._lib.sp_set_layers(self._h, arr.ctypes.data_as(C.POINTER(C.c_int32)),
+                                     arr.size)
+        if rc != arr.size:
+            raise RuntimeError("set_layers failed: " + self._lib.sp_last_error(self._h).decode())
+
+    @property
+    def row_stride(self) -> int:
+        return int(self._lib.sp_row_stride(self._h))
+
+    def decode(self, tokens: np.ndarray, start_pos: int = 0,
+               feat_ptr: int | None = None, want_logits: bool = True) -> np.ndarray:
+        """Decode one batch; features (if feat_ptr) are written straight to memory.
+
+        Returns the per-position argmax token ids.
+        """
+        toks = np.ascontiguousarray(tokens, dtype=np.int32)
+        n = int(toks.size)
+        argmax = np.empty(n, dtype=np.int32)
+        rc = self._lib.sp_decode(
+            self._h,
+            toks.ctypes.data_as(C.POINTER(C.c_int32)), n, int(start_pos),
+            C.c_void_p(feat_ptr) if feat_ptr else None,
+            argmax.ctypes.data_as(C.POINTER(C.c_int32)), None,
+            1 if want_logits else 0)
+        if rc != n:
+            raise RuntimeError("decode failed: " + self._lib.sp_last_error(self._h).decode())
+        return argmax
+
+    def reset(self) -> None:
+        self._lib.sp_reset(self._h)

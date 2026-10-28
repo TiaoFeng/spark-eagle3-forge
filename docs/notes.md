@@ -178,9 +178,27 @@ G0 比 G1 便宜兩個數量級：不必訓練、不必比對線上 p0，一次 
   `sp_decode()` 一次做完 decode、多層特徵抽取（F32→BF16 RNE）、逐列 argmax，並依 §5 佈局寫出 `[bf16 × n_layer_feat][int32 token][int32 argmax]`。
 - `sp_feat_cli` 是 M1/G0 harness：印 JSON、可 `--dump-argmax` / `--dump-feat`、可帶 `--d2t` 直接算 coverage。
 
----
+### 5b. 抽取管線（S1）
 
-## 待決策（建議在 S2 前定案）
+`spark_eagle3/extract.py` 的流程：
+
+1. 語料 → `tokenize()`（`corpus.py` 提供 COIG / firefly / wikipedia / 純文字四種讀取器）
+2. 每個 chunk 取 `chunk+1` 個 token（多 1 個是為了讓最後一列也有 `p+1` 的標籤）
+3. `shim.decode(slice, feat_ptr=store.row_ptr(n))` ← 特徵**直接寫進 memfd**，不經過 Python
+4. `store.write_tails()` 用 strided numpy view 一次寫入 `token[p+1]` / `argmax[p+1]`
+
+`feats.py` 的 `FeatureStore` 用 `os.memfd_create` + `mmap`，所以特徵是純 RAM、
+不寫 NVMe、不受 `/dev/shm` 配額限制；容量在寫入前用 `require()` 檢查，超量直接報錯而不是 OOM。
+
+**已知取捨**：每個 chunk 獨立解碼（KV 清空、位置從 0 開始）。這讓抽取有界又簡單，
+代價是 chunk 開頭幾百個 token 看到的上下文比真實長上下文少。
+若 G1 顯示特徵與線上不一致，第一步就是把 chunk 改成同一文件內連續解碼。
+
+S1 smoke（32,768 token、chunk 2048、225 個 chunk）結果：標籤覆蓋率 **0.967**，
+四列抽樣的特徵全 finite，三層兩兩最小 max|diff| = 2.25（層索引正確），
+逐層 std = [0.038, 0.132, 0.894]（殘差流隨深度增長，符合預期）。
+
+---
 
 1. **draft 詞表**（會決定 `lm_head` 形狀，必須在訓練前定）
    - 先用 S2a 語料算 coverage 的三個變體：現有 32K / 頻率重挑 32K / 64K。
