@@ -17,8 +17,10 @@ incremental pass, because the draft consumes only real tokens and real features
 (n_max = 1 never feeds its own output back).
 
 Usage:
-  python -m spark_eagle3.eval_p0 --model M.gguf --head datasets/v8/model.safetensors \
+  python -m spark_eagle3.eval_p0 --model M.gguf --head datasets/v8 \
       --prompt-file p1.txt [--prompt-file p2.txt ...] --n-gen 128 --out p0.json
+
+`--head` also accepts a training checkpoint (checkpoints/s2a.pt).
 """
 
 from __future__ import annotations
@@ -44,18 +46,31 @@ def draft_vocab_target_ids(v8_sd) -> np.ndarray:
 
 
 def load_head(path: pathlib.Path, dtype=torch.float32):
+    """Return (model, cfg, target ids of the draft vocabulary).
+
+    Two sources are understood: the published v8 directory / safetensors, whose
+    `d2t` is delta-encoded, and a training checkpoint written by train.py, whose
+    `d2t` holds absolute target ids.
+    """
     if path.is_dir():
         sd = load_file(str(path / "model.safetensors"))
         cfg = json.loads((path / "config.json").read_text())
+        target_ids = draft_vocab_target_ids(sd)
+    elif path.suffix == ".pt":
+        blob = torch.load(str(path), map_location="cpu", weights_only=False)
+        sd = blob["state_dict"]
+        cfg = blob["config"]
+        target_ids = blob["d2t"].to(torch.int64).numpy()
     else:
         sd = load_file(str(path))
         cfg_path = path.parent / "config.json"
         cfg = json.loads(cfg_path.read_text())
+        target_ids = draft_vocab_target_ids(sd)
     cfg = config_from_json(cfg)
     model = Eagle3Head(cfg).to(dtype).eval()
     keys = set(model.state_dict().keys())
     model.load_state_dict({k: v.to(dtype) for k, v in sd.items() if k in keys}, strict=True)
-    return model, sd, cfg
+    return model, cfg, target_ids
 
 
 def run_prompt(shim: Shim, store: FeatureStore, head, head_dtype,
@@ -178,8 +193,7 @@ def main() -> int:
     layers = [int(x) for x in args.layers.split(",") if x.strip()]
     dtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
 
-    head, sd, cfg = load_head(pathlib.Path(args.head), dtype)
-    target_ids = draft_vocab_target_ids(sd)
+    head, cfg, target_ids = load_head(pathlib.Path(args.head), dtype)
 
     results = []
     with Shim(args.model, n_gpu_layers=args.n_gpu_layers, n_ctx=args.n_ctx,

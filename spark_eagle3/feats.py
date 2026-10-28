@@ -36,6 +36,7 @@ class FeatureStore:
     def __init__(self, capacity_bytes: int, n_layer_feat: int, n_embd: int,
                  name: str = "spark_feat"):
         self.row_bytes = row_bytes(n_layer_feat, n_embd)
+        self.feature_bytes = n_layer_feat * n_embd * 2
         self.n_layer_feat = n_layer_feat
         self.n_embd = n_embd
         self.capacity_bytes = int(capacity_bytes)
@@ -90,6 +91,22 @@ class FeatureStore:
         """Copy of one row as uint8."""
         start = i * self.row_bytes
         return np.frombuffer(self.buf, dtype=np.uint8, count=self.row_bytes, offset=start).copy()
+
+    # -- typed views (no copy; fancy indexing copies the rows it touches) ---
+    def feature_view(self) -> np.ndarray:
+        """[capacity, feature_bytes] uint8 view; index it to copy selected rows."""
+        return np.ndarray(shape=(self.capacity, self.feature_bytes), dtype=np.uint8,
+                          buffer=self.buf, strides=(self.row_bytes, 1))
+
+    def token_view(self) -> np.ndarray:
+        """[capacity] int32 view of token[p+1]."""
+        return np.ndarray(shape=(self.capacity,), dtype="<i4", buffer=self.buf,
+                          offset=self.feature_bytes, strides=(self.row_bytes,))
+
+    def argmax_view(self) -> np.ndarray:
+        """[capacity] int32 view of argmax[p+1]."""
+        return np.ndarray(shape=(self.capacity,), dtype="<i4", buffer=self.buf,
+                          offset=self.feature_bytes + 4, strides=(self.row_bytes,))
 
     # -- lifecycle ---------------------------------------------------------
     def flush(self) -> None:

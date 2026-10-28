@@ -312,6 +312,60 @@ five registers now match the online measurement.
 
 ---
 
+## 6. Gate protocol for S2a (fixed before training)
+
+`AGENTS.md` §8 quoted G3 (`chat_think` 0.17 → 0.25) and G3b (`code` 0.356) from the temp 1.0 online
+table, but the gate is checked with `eval_p0.py`, which replays **greedily**. Those two numbers were
+never measured on the protocol they gate, so they are replaced by the ones below. They were taken
+**before any training run**, so the outcome cannot be reinterpreted afterwards.
+
+**Protocol P.** `spark_eagle3.eval_p0`, `--dtype bfloat16 --n-gen 256`, greedy (the target decodes by
+argmax, the draft is scored at every generated position), on prompts rendered with the model's own
+chat template. Two prompt sets: `rendered` (the six fixed workloads) and `realistic` (the eight
+Chinese thinking prompts of §2b). Offline and greedy, so the numbers are hardware independent.
+
+**v8 baseline on P** (`logs/p0_v8_greedy_256.json`, `logs/p0_v8_greedy_realistic_256.json`):
+
+| Workload | p0 | coverage |
+|---|---:|---:|
+| `chat_think` | 0.2461 | 0.7344 |
+| `chat_nothink` | 0.0441 | 0.0662 |
+| `prose_think` | 0.0469 | 0.0938 |
+| `prose_nothink` | 0.0000 | 0.0298 |
+| `code` | 0.1992 | 0.5898 |
+| `copy` | 0.1562 | 0.5469 |
+
+| realistic prompt | p0 | coverage |
+|---|---:|---:|
+| zh_tech | 0.3203 | 0.7930 |
+| zh_math | 0.3205 | 0.6026 |
+| zh_code | 0.2930 | 0.6797 |
+| zh_translate | 0.1250 | 0.5972 |
+| zh_rewrite | 0.0508 | 0.0703 |
+| zh_summary | 0.0469 | 0.0742 |
+| zh_advice | 0.0273 | 0.0547 |
+| zh_daily | 0.0000 | 0.0000 |
+| **mean of 8** | **0.1480** | **0.3590** |
+
+Note that the single `chat_think` prompt measures 0.2461 at `--n-gen 256` and 0.2891 at
+`--n-gen 128`: the scorer samples a different set of positions, and the spread (0.043) is larger than
+the ±0.03 noise quoted elsewhere. `--n-gen 256` is the standard here because it scores twice as many
+positions.
+
+**Gates, restated as absolute targets on P:**
+
+| Gate | Condition | Meaning if it fails |
+|---|---|---|
+| G3 probe | `chat_think` **≥ 0.25** | below v8's own 0.2461 → the recipe damaged the register v8 already serves; stop |
+| G3b no forgetting | `code` **≥ 0.18** and `copy` **≥ 0.13** | v8 is 0.1992 / 0.1562; a drop of more than ~0.02–0.03 is forgetting, because only 4,243 of v8's 32,000 `lm_head` rows survive the vocabulary change |
+| G3c the point | realistic mean **≥ 0.25** | v8 is 0.1480 there and the rebuilt vocabulary lifts the coverage ceiling from 0.245 to 0.939; a head that cannot turn that into 0.25 has not learned the new rows |
+| G4 ship | `chat_think` **≥ 0.33** (unchanged) | 1.19x, the number `AGENTS.md` §8 has always carried |
+
+G3 and G3b are now *no-regression* checks against v8 on the same protocol; G3c is the gain the
+project exists for. G4 keeps its original value, so the ship criterion did not get easier.
+
+---
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **resolved in §2c**: the rebuilt 32K vocabulary reaches 0.939

@@ -27,7 +27,8 @@ import time
 import urllib.error
 import urllib.request
 
-ACCEPT_RE = re.compile(r"draft acceptance = ([0-9.]+)\s*\(\s*(\d+) accepted / (\d+) generated\)")
+ACCEPT_RE = re.compile(
+    r"draft acceptance = ([0-9.]+)\s*\(\s*(\d+)\s*accepted\s*/\s*(\d+)\s*generated\)")
 
 
 def wait_health(port: int, proc: subprocess.Popen, timeout: float = 240.0) -> bool:
