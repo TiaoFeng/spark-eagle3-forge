@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "shim: build",
+			"type": "shell",
+			"command": "cmake -S ${workspaceFolder}/csrc -B ${workspaceFolder}/csrc/build -G Ninja -DLLAMACPP_ROOT=${env:LLAMACPP_ROOT} && cmake --build ${workspaceFolder}/csrc/build",
+			"options": {
+				"env": {
+					"LD_LIBRARY_PATH": "${env:LLAMACPP_ROOT}/build/bin"
+				}
+			},
+			"group": "build",
+			"problemMatcher": ["$gcc"]
+		},
+		{
+			"label": "shim: G0 self-check",
+			"type": "shell",
+			"command": "${workspaceFolder}/csrc/build/sp_feat_cli --model ${env:MODELS_DIR}/Spark-X2.6-4B-abliterated-FIT-REFERENCE-3G-Q6_K.gguf --text ${workspaceFolder}/AGENTS.md --ctx 1024 --tokens 512 --layers 0,2,18,33 --add-bos",
+			"options": {
+				"env": {
+					"LD_LIBRARY_PATH": "${env:LLAMACPP_ROOT}/build/bin"
+				}
+			},
+			"group": "test",
+			"problemMatcher": []
+		}
+	]
+}
