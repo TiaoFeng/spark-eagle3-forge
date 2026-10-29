@@ -383,7 +383,7 @@ project exists for. G4 keeps its original value, so the ship criterion did not g
 | loss | `CE(argmax) + 0.5 · CE(training-time test)` |
 | label coverage | 0.944–0.993 per domain-segment; masked fraction during training 0.7–2.9% |
 | checkpoint | every 500 steps (parameters only), full state after each segment |
-| wall clock | 68 min (extraction 42 min at ~3150 tok/s, training 26 min at ~10.6k tok/s) |
+| wall clock | extraction ≈ 2/3 of the run and training ≈ 1/3; absolute times in `AGENTS.local.md` |
 | train curve | CE 8.37 → 2.14, top-1 0.168 → 0.614 |
 
 `lambda = 0.5` was chosen because the published head's `train_log.json` carries no
@@ -546,8 +546,8 @@ offline scorer counting every position while llama.cpp counts verification steps
 
 S2a is done (§7). The next decision is between two paths, and they are not exclusive:
 
-- **S3 (scale)**: 22M unique tokens instead of 8M. Extraction is the cost (~2 h at 3.1k tok/s) and
-  the 8 GiB-per-segment layout does not change. This is the only lever that addresses
+- **S3 (scale)**: 22M unique tokens instead of 8M. Extraction is the cost (it scales with the token
+  count) and the 8 GiB-per-segment layout does not change. This is the only lever that addresses
   question 4.
 - **S2b (register)**: §7c shows the gain concentrating in registers that were *coverage*-limited,
   and `zh_daily` — the most purely Chinese prompt — still improving at step 8000. Generating

@@ -18,7 +18,7 @@ what this project is about.
 
 ## 0. Where we are
 
-G0, G1 and G2 pass, and S2a has run: 8M unique tokens, 8000 steps, 68 minutes.
+G0, G1 and G2 pass, and S2a has run: 8M unique tokens over 8000 steps.
 **`checkpoints/s2a.pt` / `spark-eagle3-s2a.gguf` replace v8 on Chinese workloads** — mean p0 over
 the eight realistic Chinese prompts 0.148 → 0.316 offline and 0.148 → 0.348 through llama.cpp, with
 a measured 1.19x decode speed-up on the same mix. `chat_think` misses G4 by 0.002 (0.3281 vs 0.33)
