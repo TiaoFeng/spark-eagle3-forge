@@ -152,7 +152,9 @@ spark-eagle3-forge/
 ├── AGENTS.md                  # this file
 ├── AGENTS.local.md.example    # template for the gitignored machine-specific file
 ├── CLAUDE.md                  # points at AGENTS.md
-├── README.md
+├── README.md                  # English, the public front page
+├── README.cn.md               # 简体中文
+├── THIRD-PARTY-NOTICES.md     # upstream model / dataset / framework licences
 └── docs/
     ├── facts.md               # core facts (§2 of this file expands here)
     └── notes.md               # measurements, derivations, open questions
