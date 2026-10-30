@@ -28,6 +28,15 @@ except ImportError:  # pragma: no cover
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
 
+
+def _section(rel: str, index: int, chars: int) -> str:
+    """A stable excerpt: split the public doc on '## ' and take one section."""
+    parts = (BASE / rel).read_text(encoding="utf-8").split("\n## ")
+    if index >= len(parts):
+        raise SystemExit("section %d not found in %s" % (index, rel))
+    return parts[index][:chars].strip()
+
+
 # workload -> (user text, enable_thinking)
 PROBES = {
     "chat_think": (
@@ -187,18 +196,152 @@ DAILY = {
                          True, ["docs/facts.md"]),
 }
 
+# D1: the NLP workload (translation, summarisation, document organisation,
+# chat, long context). Sources are public docs in this repo or invented notes;
+# the prompt text stays Chinese because the language is the subject.
+NLP = {
+    # Chinese -> English
+    "nlp_zh2en_01": ("把下面这段中文翻译成英文，只输出译文，不要解释：\n\n"
+                     + _section("README.cn.md", 0, 600), True),
+    "nlp_zh2en_02": ("把下面这段中文翻译成英文，只输出译文，保留数字与专有名词：\n\n"
+                     + _section("README.cn.md", 1, 600), True),
+    "nlp_zh2en_03": ("把下面这段中文翻译成英文，只输出译文，不要解释：\n\n"
+                     + _section("README.cn.md", 2, 600), True),
+    "nlp_zh2en_04": ("把下面这段中文翻译成英文，只输出译文，保留列表结构：\n\n"
+                     + _section("README.cn.md", 3, 600), True),
+    "nlp_zh2en_05": ("把下面这段中文翻译成英文，只输出译文，不要解释：\n\n"
+                     + _section("README.cn.md", 4, 600), True),
+    "nlp_zh2en_06": ("把下面这段中文翻译成英文，只输出译文，保留代码与命令：\n\n"
+                     + _section("README.cn.md", 5, 600), True),
+    "nlp_zh2en_07": ("把下面这段中文翻译成英文，只输出译文，不要解释：\n\n"
+                     + _section("README.cn.md", 7, 600), True),
+    "nlp_zh2en_08": ("把下面这段中文翻译成英文，只输出译文，保留引用格式：\n\n"
+                     + _section("README.cn.md", 9, 600), True),
+
+    # English -> Chinese
+    "nlp_en2zh_01": ("把下面这段英文翻译成简体中文，只输出译文，不要解释：\n\n"
+                     + _section("README.md", 0, 600), True),
+    "nlp_en2zh_02": ("把下面这段英文翻译成简体中文，只输出译文，保留数字与专有名词：\n\n"
+                     + _section("README.md", 1, 600), True),
+    "nlp_en2zh_03": ("把下面这段英文翻译成简体中文，只输出译文，不要解释：\n\n"
+                     + _section("README.md", 2, 600), True),
+    "nlp_en2zh_04": ("把下面这段英文翻译成简体中文，只输出译文，保留列表结构：\n\n"
+                     + _section("README.md", 3, 600), True),
+    "nlp_en2zh_05": ("把下面这段英文翻译成简体中文，只输出译文，不要解释：\n\n"
+                     + _section("README.md", 4, 600), True),
+    "nlp_en2zh_06": ("把下面这段英文翻译成简体中文，只输出译文，保留代码与命令：\n\n"
+                     + _section("README.md", 5, 600), True),
+    "nlp_en2zh_07": ("把下面这段英文翻译成简体中文，只输出译文，不要解释：\n\n"
+                     + _section("README.md", 7, 600), True),
+    "nlp_en2zh_08": ("把下面这段英文翻译成简体中文，只输出译文，保留引用格式：\n\n"
+                     + _section("README.md", 9, 600), True),
+
+    # Chinese document -> Chinese summary
+    "nlp_sumzh_01": ("请用 150 字左右总结下面这段中文，保留关键数字与结论：\n\n"
+                     + _section("README.cn.md", 1, 1200), True),
+    "nlp_sumzh_02": ("请用 150 字左右总结下面这段中文，说明它解决了什么问题：\n\n"
+                     + _section("README.cn.md", 2, 1200), True),
+    "nlp_sumzh_03": ("请用 150 字左右总结下面这段中文，分三点列出：\n\n"
+                     + _section("README.cn.md", 3, 1200), True),
+    "nlp_sumzh_04": ("请用 150 字左右总结下面这段中文，按步骤说明：\n\n"
+                     + _section("README.cn.md", 5, 1200), True),
+    "nlp_sumzh_05": ("请用 150 字左右总结下面这段中文，指出已知问题：\n\n"
+                     + _section("README.cn.md", 7, 1200), True),
+    "nlp_sumzh_06": ("请用 150 字左右总结下面这段中文，保留许可与声明要点：\n\n"
+                     + _section("README.cn.md", 9, 1200), True),
+
+    # English document -> Chinese summary
+    "nlp_sumen_01": ("请用 150 字左右的中文总结下面这段英文，保留关键数字与结论：\n\n"
+                     + _section("README.md", 1, 1200), True),
+    "nlp_sumen_02": ("请用 150 字左右的中文总结下面这段英文，说明它解决了什么问题：\n\n"
+                     + _section("README.md", 2, 1200), True),
+    "nlp_sumen_03": ("请用 150 字左右的中文总结下面这段英文，分三点列出：\n\n"
+                     + _section("README.md", 3, 1200), True),
+    "nlp_sumen_04": ("请用 150 字左右的中文总结下面这段英文，按步骤说明：\n\n"
+                     + _section("README.md", 5, 1200), True),
+    "nlp_sumen_05": ("请用 150 字左右的中文总结下面这段英文，指出已知问题：\n\n"
+                     + _section("README.md", 7, 1200), True),
+    "nlp_sumen_06": ("请用 150 字左右的中文总结下面这段英文，保留许可与声明要点：\n\n"
+                     + _section("README.md", 9, 1200), True),
+
+    # Document organisation
+    "nlp_org_01": ("把下面这段会议记录整理成行动项表格，列为：事项、负责人、截止日期、状态。\n\n"
+                   "本周例会讨论了搜索服务的缓存改造。张工负责在下周五前完成方案评审，"
+                   "李工负责补充压测数据，王工负责确认灰度范围。大家同意先在小流量环境灰度，"
+                   "观察一周后再全量。风险是缓存一致性，需要在评审中给出回滚方案。", True),
+    "nlp_org_02": ("把下面的项目进展整理成三级大纲，并在每项后标注风险。\n\n"
+                   "项目「星河」当前进展：接口开发完成 80%；数据迁移完成 60%，"
+                   "遇到字段缺失问题；前端联调尚未开始；测试环境已就绪；"
+                   "上线时间暂定下月 15 日。主要风险是数据质量和联调排期。", True),
+    "nlp_org_03": ("把下面的需求整理成 JSON，字段包括 id、描述、优先级、验收标准。\n\n"
+                   "需求：支持按标签筛选；支持导出 CSV；列表默认按更新时间倒序；"
+                   "每页 20 条；管理员可以批量删除；普通用户只能删除自己的数据。", True),
+    "nlp_org_04": ("把下面的方案说明整理成对比表格，列为：方案、成本、延迟、扩展性、运维复杂度。\n\n"
+                   "方案 A：成本低，延迟 120ms，运维简单，但不支持水平扩展。"
+                   "方案 B：成本中等，延迟 80ms，需要额外的消息队列，但可以水平扩展。"
+                   "方案 C：成本高，延迟 50ms，运维复杂，支持多活。", True),
+    "nlp_org_05": ("把下面的邮件往来整理成决策记录，列为：结论、依据、负责人、后续动作。\n\n"
+                   "邮件一：客户希望把交付时间提前两周。"
+                   "邮件二：研发表示提前两周需要砍掉报表功能。"
+                   "邮件三：客户同意先交付核心功能，报表放到第二阶段。"
+                   "邮件四：项目经理确认按核心功能排期，下周一给出新的里程碑。", True),
+    "nlp_org_06": ("把下面的书单整理成分类表格，列为：书名、主题、适合的读者。\n\n"
+                   "《设计数据密集型应用》讲数据系统；《代码整洁之道》讲工程规范；"
+                   "《人月神话》讲项目管理；《深度工作》讲专注方法；《金字塔原理》讲表达结构。", True),
+    "nlp_org_07": ("把下面的缺陷报告整理成摘要，包含：严重程度、影响范围、复现步骤、下一步。\n\n"
+                   "用户反馈：导出 CSV 时，如果文件名包含空格，浏览器会截断文件名。"
+                   "影响 Chrome 和 Edge；Firefox 正常。复现步骤：选择包含空格的文件名，点击导出。"
+                   "日志里没有报错。", True),
+    "nlp_org_08": ("把下面的行程整理成表格，列为：日期、时间、地点、预算备注。\n\n"
+                   "三天行程：第一天上午到杭州，下午西湖；第二天上午灵隐寺，下午龙井村；"
+                   "第三天上午西溪湿地，下午返程。预算每天 600 元，住在地铁沿线。", True),
+
+    # Chat, including two multi-turn sessions
+    "nlp_chat_01": ("最近工作有点累，有什么放松的方法吗？请给出至少五条具体建议。", True),
+    "nlp_chat_02": ("我想系统学习数据可视化，应该按什么顺序学？请给出一个三个月的计划。", True),
+    "nlp_chat_03": ("帮我把「少即是多」这个设计原则解释给一个刚入行的同事听。", True),
+    "nlp_chat_04": ("周末想在家做一顿简单的饭，推荐三道容易上手的菜，并说明做法。", True),
+    "nlp_chat_05": ([
+        {"role": "user", "content": "我在整理一份中文技术资料，想先列一个提纲。"},
+        {"role": "assistant", "content": "可以。先告诉我资料的主题和大致篇幅，我帮你按「背景—方法—结果—结论」列提纲。"},
+        {"role": "user", "content": "主题是本地部署的推理加速，篇幅大约一万字。请直接给我一个四级提纲。"},
+    ], True),
+    "nlp_chat_06": ([
+        {"role": "user", "content": "这段话有点啰嗦，帮我改简洁：由于最近天气状况十分不理想，因此我们决定将原定于本周六举行的户外活动延期至下周六举行。"},
+        {"role": "assistant", "content": "可以改成：因天气不佳，本周六的户外活动顺延至下周六。"},
+        {"role": "user", "content": "再正式一点，适合写在通知里。"},
+    ], True),
+
+    # Long-context NLP tasks
+    "nlp_longctx_01": ("请把这份文档整理成三级大纲，并在每节下写一句摘要。",
+                       True, ["docs/notes.md", "docs/facts.md"]),
+    "nlp_longctx_02": ("请从文档中提取所有 gate 及其结论，整理成表格，列为：gate、条件、结果、状态。",
+                       True, ["docs/notes.md"]),
+    "nlp_longctx_03": ("请用 300 字总结第 6 节和第 7 节的核心结论。",
+                       True, ["docs/notes.md"]),
+    "nlp_longctx_04": ("请把第 8 节翻译成简体中文，保留数字与专有名词。",
+                       True, ["docs/notes.md"]),
+    "nlp_longctx_05": ("请比较 S2a 与 D0 的结论，列出相同点和不同点。",
+                       True, ["docs/notes.md"]),
+    "nlp_longctx_06": ("请把文档中所有带数字的结论整理成一张表，列为：指标、数值、上下文。",
+                       True, ["docs/notes.md", "docs/facts.md"]),
+}
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--set", choices=("synthetic", "realistic", "daily"), default="synthetic",
+    ap.add_argument("--set", choices=("synthetic", "realistic", "daily", "nlp"),
+                    default="synthetic",
                     help="synthetic = six invented workloads; realistic = the actual usage "
                          "pattern (Simplified Chinese prompts, thinking on, mixed-language "
-                         "thoughts); daily = the D0 deployment mix across six registers")
+                         "thoughts); daily = the D0 deployment mix across six registers; "
+                         "nlp = translation, summarisation, organisation, chat, long context")
     args = ap.parse_args()
 
-    probes = {"synthetic": PROBES, "realistic": REALISTIC, "daily": DAILY}[args.set]
+    probes = {"synthetic": PROBES, "realistic": REALISTIC, "daily": DAILY,
+              "nlp": NLP}[args.set]
 
     reader = GGUFReader(args.model)
     field = reader.fields.get("tokenizer.chat_template")
@@ -219,30 +362,37 @@ def main() -> int:
 
     manifest = {}
     for name, spec in probes.items():
-        user, thinking = spec[0], spec[1]
+        first, thinking = spec[0], spec[1]
         context = spec[2] if len(spec) > 2 else None
-        if context:
-            parts = [(BASE / rel).read_text(encoding="utf-8") for rel in context]
-            user = ("以下是我提供的参考资料，请只根据这些内容回答。\n\n"
-                    + "\n\n---\n\n".join(parts)
-                    + "\n\n问题：" + user)
+        if isinstance(first, list):
+            messages = first
+        else:
+            user = first
+            if context:
+                parts = [(BASE / rel).read_text(encoding="utf-8") for rel in context]
+                user = ("以下是我提供的参考资料，请只根据这些内容回答。\n\n"
+                        + "\n\n---\n\n".join(parts)
+                        + "\n\n问题：" + user)
+            messages = [{"role": "user", "content": user}]
         text = tmpl.render(
-            messages=[{"role": "user", "content": user}],
+            messages=messages,
             add_generation_prompt=True,
             enable_thinking=thinking,
         )
         path = out / f"{name}.txt"
         path.write_text(text, encoding="utf-8")
-        register = name.split("_")[1] if name.startswith("daily_") else name
+        register = (name.split("_")[1]
+                    if name.startswith(("daily_", "nlp_")) else name)
         manifest[name] = {
             "path": str(path),
             "register": register,
             "thinking": thinking,
+            "turns": len(messages),
             "chars": len(text),
             "tail": text[-40:],
         }
         print(f"{name:18s} reg={register:8s} thinking={str(thinking):5s} "
-              f"chars={len(text):6d} tail={text[-32:]!r}")
+              f"turns={len(messages)} chars={len(text):6d} tail={text[-32:]!r}")
 
     (out / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

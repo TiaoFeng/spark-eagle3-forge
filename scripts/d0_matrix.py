@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D0: deployment-matched acceptance matrix.
+"""Deployment-matched acceptance matrix (D0/D1).
 
 Every gate so far in this repo is greedy (``temperature = 0``), while a real
 session samples. This harness measures the same prompts under three server

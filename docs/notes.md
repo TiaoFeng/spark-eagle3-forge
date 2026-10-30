@@ -630,13 +630,88 @@ ring buffer) to 0.67 (`daily_struct_04`, a Markdown table).
 
 ---
 
+## 9. D1: the NLP workload matrix
+
+### 9a. Why
+
+The daily workload is natural-language work: document organisation, Chinese-
+English translation, summarisation and chat. D0 covered chat, technical Q&A,
+code, structured output and long context, but not translation, and its mix was
+tuned for a code-heavy session. D1 measures the actual NLP mix.
+
+### 9b. Protocol
+
+- 48 prompts in seven registers: chat (6, two multi-turn), Chinese -> English
+  translation (8), English -> Chinese translation (8), Chinese summary (6),
+  English document -> Chinese summary (6), document organisation (8), long
+  context (6).
+- Sources are public repo docs (`README.md`, `README.cn.md`, `docs/notes.md`,
+  `docs/facts.md`) or invented notes; rendered with the model's chat template by
+  `scripts/make_prompts.py --set nlp`.
+- temp 1.0 only: D0 showed that temperature is not a lever, so the matrix runs at
+  the deployment setting. Baseline / greedy / probabilistic and the aggregation
+  are the D0 harness (`scripts/d0_matrix.py`, `scripts/d0_report.py`).
+- 144 requests, no failures.
+
+### 9c. Results
+
+| register | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
+|---|---:|---:|---:|---:|
+| chat | 0.769 | 0.276 | 0.359 | 0.977 |
+| Chinese -> English | 0.915 | 0.449 | 0.491 | 0.852 |
+| English -> Chinese | 0.913 | 0.325 | 0.356 | 0.814 |
+| Chinese summary | 0.832 | 0.333 | 0.400 | 0.960 |
+| English -> Chinese summary | 0.844 | 0.277 | 0.328 | 0.892 |
+| document organisation | 0.892 | 0.421 | 0.471 | 0.935 |
+| long context | 0.880 | 0.298 | 0.339 | 0.810 |
+| **all** | **0.869** | **0.344** | **0.396** | **0.888** |
+
+Probabilistic drafting is identical to greedy for all 48 prompts, the same
+result as D0 (§8d): the backend sampler is top-k only, and the host sampler
+still adds no accepted tokens.
+
+### 9d. What the numbers say
+
+1. **Translation is the strongest register, not the weakest.** Chinese -> English
+   reaches 0.449 at half of its ceiling (0.491), and English -> Chinese 0.325 at
+   0.356. The source text constrains the output, so the target is predictable and
+   the head converts that well.
+2. **Summarisation is the weakest.** English -> Chinese summary 0.277, Chinese
+   summary 0.333, long-context summary/organisation 0.298, efficiency 0.33-0.40.
+   A summary is a paraphrase, so the target's own choice is less constrained and
+   the head has less to latch onto.
+3. **Organisation is strong** (0.421, 0.471), consistent with D0's structured
+   output (0.407, 0.462): constrained formats are where this head wins.
+4. **Chat stays head-limited** (0.276 at coverage 0.977), exactly as in D0.
+5. **The vocabulary binds the English-heavy registers.** Coverage is 0.81-0.89
+   for both translation directions, English -> Chinese summary and long context,
+   against 0.96-0.98 for chat and Chinese summary. The 32K vocabulary is 84.8%
+   CJK, so the bilingual workload has a structural cap there.
+
+### 9e. Decision
+
+- **Rebuild `d2t` at 48K as a union, not a fresh build**: keep the current
+  32,000 ids and append the top 16,000 English/ASCII target ids from a bilingual
+  corpus. A fresh build would move the Chinese rows and throw away the S2a
+  `lm_head` alignment; the union keeps all 32K rows.
+- **Warm-start from `checkpoints/s2a.pt`, not v8**: copy the 32K `lm_head` rows
+  and randomly initialise the 16,000 new English rows. `init_head.py` currently
+  starts from v8, so a `--from-checkpoint` path is needed.
+- **Then S2b with the 48K head**, weighted to the weak registers: summarisation
+  30%, translation 25% (more English -> Chinese), organisation 20%, chat 20%,
+  other 5%; long-context shards 30% of tokens.
+- **Gates**: NLP mix mean p0 >= 0.40; English -> Chinese >= 0.40; English ->
+  Chinese summary >= 0.35; coverage >= 0.90 on every register; online wall clock
+  >= 1.3x. Re-run D1 after S2b.
+
+---
+
 ## Open questions
 
-1. ~~**Draft vocabulary**~~ — **reopened by §8**: the rebuilt 32K vocabulary reaches 0.939
-   coverage on the recorded steps, but D0 measures only 0.75 (code) and 0.77 (technical Q&A)
-   on the daily mix. If those registers carry a large share of daily tokens, a 48K-64K rebuild
-   with a code/ASCII quota is worth the retraining before S3; otherwise the 32K vocabulary and
-   `checkpoints/head_init.pt` stay.
+1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
+   both translation directions, English -> Chinese summary and long context. The 48K union
+   rebuild (keep the 32K ids, append 16K English ids, warm-start from S2a) is scheduled before
+   S2b; the code/ASCII quota is no longer the target.
 2. **Feature precision bf16 vs F32**: v8's weights are F32, bf16 is purely a capacity trade
    (2.79M vs 1.4M tokens). Train two short runs on the same data and compare p0.
 3. **Contiguous KV within a chunk**: keeping it is closer to live long-context behaviour, but the
@@ -650,16 +725,17 @@ ring buffer) to 0.67 (`daily_struct_04`, a Markdown table).
 
 ## Next step
 
-D0 (§8) settles what S2a left open: the head converts about a third of a target top-1 ceiling of
-0.80 at the deployment temperature, while the temperature and probabilistic drafting change
-nothing. The next stage is therefore:
+D0 (§8) and D1 (§9) settle the measurement questions: the head converts about a third of the
+target's top-1 ceiling, temperature and probabilistic drafting change nothing, and the NLP
+workload is strongest on translation/organisation and weakest on summarisation. The next stage:
 
-1. **S2b (register)**: ~4M tokens with Chinese thinking traces, a code/structured share matched to
-   daily use, long-context shards, and TTT token mixing. It is a recipe check, not the final run.
-2. **Vocabulary decision**: if code and technical text carry a large share of daily tokens,
-   rebuild `d2t` at 48K-64K before S3; D0 measures 0.75-0.77 coverage there.
-3. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, then a last-mile pass on the daily
-   mix. D0 is the gate.
+1. **D2 (vocabulary)**: 48K union build, warm start from `checkpoints/s2a.pt`, and score the
+   candidate on the D1 steps with `eval_vocab.py` before any training.
+2. **S2b (register)**: ~4M tokens, summarisation 30% / translation 25% / organisation 20% /
+   chat 20%, long-context shards 30% of tokens, TTT token mixing. A recipe check, not the final
+   run.
+3. **S3 (scale)**: 12-16M unique tokens with the S2b mixture and a last-mile pass on the daily
+   mix; D1 is the gate.
 
 Probabilistic drafting and the sampling temperature are not training levers at present; they stay
 parked until the head is calibrated.

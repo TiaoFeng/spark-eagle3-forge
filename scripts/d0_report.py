@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D0: aggregate the acceptance matrix into tables.
+"""Aggregate an acceptance matrix (D0/D1) into tables.
 
 Reads the JSONL written by ``scripts/d0_matrix.py`` and reports, per
 temperature and register:
@@ -23,7 +23,8 @@ import json
 import pathlib
 from collections import defaultdict
 
-REGISTER_ORDER = ["chat", "chatnt", "tech", "code", "struct", "longctx"]
+REGISTER_ORDER = ["chat", "chatnt", "zh2en", "en2zh", "sumzh", "sumen",
+                  "org", "tech", "code", "struct", "longctx"]
 
 
 def load(path: pathlib.Path):
@@ -134,7 +135,7 @@ def main() -> int:
                            lambda r: (float(r["temp"]), register_key(r))).items():
         greedy_by[key] = spec_stats(recs)
 
-    lines = ["# D0 acceptance matrix", ""]
+    lines = ["# acceptance matrix", ""]
     summary = {"temps": temps, "modes": {}, "registers": {}}
 
     for mode in ("baseline", "greedy", "probabilistic"):
