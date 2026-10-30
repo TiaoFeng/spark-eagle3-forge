@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record greedy generation steps for draft-vocabulary scoring.
 
-Writes int32 rows ``[register_index, generated_token, target_argmax, is_cjk]``
+Writes int32 rows ``[workload index, generated_token, target_argmax, is_cjk]``
 over the generated region of every prompt in a rendered prompt directory. The
 format is the one ``scripts/eval_vocab.py`` consumes, so a candidate vocabulary
 can be scored on the actual workload without touching the draft head.
@@ -29,17 +29,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from spark_eagle3.feats import FeatureStore  # noqa: E402
 from spark_eagle3.llamacpp import Shim  # noqa: E402
 
-REGISTER_ORDER = ["chat", "zh2en", "en2zh", "sumzh", "sumen", "org", "longctx"]
+WORKLOAD_ORDER = ["chat", "zh2en", "en2zh", "sumzh", "sumen", "org", "longctx"]
 
 
 def is_cjk_piece(piece: bytes) -> bool:
     return any(0xE4 <= b <= 0xE9 for b in piece)
 
 
-def register_labels(manifest: dict) -> list[str]:
-    seen = {rec.get("register", name) for name, rec in manifest.items()}
-    known = [r for r in REGISTER_ORDER if r in seen]
-    return known + sorted(r for r in seen if r not in REGISTER_ORDER)
+def workload_labels(manifest: dict) -> list[str]:
+    # new manifests carry "workload"; old rendered prompts carry "register"
+    seen = {rec.get("workload") or rec.get("register", name) for name, rec in manifest.items()}
+    known = [r for r in WORKLOAD_ORDER if r in seen]
+    return known + sorted(r for r in seen if r not in WORKLOAD_ORDER)
 
 
 def main() -> int:
@@ -57,7 +58,7 @@ def main() -> int:
     layers = [int(x) for x in args.layers.split(",") if x.strip()]
     prompt_dir = pathlib.Path(args.prompt_dir)
     manifest = json.loads((prompt_dir / "manifest.json").read_text(encoding="utf-8"))
-    labels = register_labels(manifest)
+    labels = workload_labels(manifest)
     label_index = {name: i for i, name in enumerate(labels)}
 
     rows: list[tuple[int, int, int, int]] = []
@@ -69,7 +70,7 @@ def main() -> int:
         with FeatureStore(args.n_ctx * 20000, len(layers), shim.n_embd) as store:
             for name in sorted(manifest):
                 rec = manifest[name]
-                reg = label_index[rec.get("register", name)]
+                wl = label_index[rec.get("workload") or rec.get("register", name)]
                 ids = shim.tokenize(pathlib.Path(rec["path"]).read_text(encoding="utf-8"),
                                     add_special=False)
                 n_prompt = int(ids.size)
@@ -110,10 +111,10 @@ def main() -> int:
                     tok = int(toks[p + 1])
                     arg = int(argmax[p + 1])
                     cjk = 1 if is_cjk_piece(shim.token_to_piece(tok)) else 0
-                    rows.append((reg, tok, arg, cjk))
-                    counts[labels[reg]] += 1
-                print("%-18s reg=%-8s prompt=%5d generated=%3d"
-                      % (name, labels[reg], n_prompt, n - n_prompt), flush=True)
+                    rows.append((wl, tok, arg, cjk))
+                    counts[labels[wl]] += 1
+                print("%-18s workload=%-8s prompt=%5d generated=%3d"
+                      % (name, labels[wl], n_prompt, n - n_prompt), flush=True)
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +125,7 @@ def main() -> int:
         "n_gen": args.n_gen,
         "labels": labels,
         "rows": int(arr.shape[0]),
-        "per_register": counts,
+        "per_workload": counts,
         "cjk_share": float(arr[:, 3].mean()) if len(arr) else 0.0,
     }
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

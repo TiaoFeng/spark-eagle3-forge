@@ -114,7 +114,7 @@ REALISTIC = {
     ),
 }
 
-# The deployment mix for D0: six registers weighted roughly by token share in a
+# The deployment mix for D0: six workloads weighted roughly by token share in a
 # real session (chat, chat without thinking, technical Q&A, code, structured
 # output, long context). Entries are (user text, enable_thinking) or
 # (user text, enable_thinking, [repo-relative context files]); the context is
@@ -188,7 +188,7 @@ DAILY = {
                          True, ["docs/notes.md"]),
     "daily_longctx_03": ("请列出模型的几何参数和 cost model 公式，并说明 n-max 为什么必须是 1。",
                          True, ["docs/facts.md"]),
-    "daily_longctx_04": ("请说明 S2a 中哪些 register 提升最大、哪些几乎没有变化，并给出可能的原因。",
+    "daily_longctx_04": ("请说明 S2a 中哪些工作负载提升最大、哪些几乎没有变化，并给出可能的原因。",
                          True, ["docs/notes.md"]),
     "daily_longctx_05": ("请说明 G1 的 offline 与 online 差异来源，以及为什么 copy 是 outlier。",
                          True, ["docs/notes.md"]),
@@ -336,7 +336,7 @@ def main() -> int:
                     default="synthetic",
                     help="synthetic = six invented workloads; realistic = the actual usage "
                          "pattern (Simplified Chinese prompts, thinking on, mixed-language "
-                         "thoughts); daily = the D0 deployment mix across six registers; "
+                         "thoughts); daily = the D0 deployment mix across six workloads; "
                          "nlp = translation, summarisation, organisation, chat, long context")
     args = ap.parse_args()
 
@@ -381,17 +381,17 @@ def main() -> int:
         )
         path = out / f"{name}.txt"
         path.write_text(text, encoding="utf-8")
-        register = (name.split("_")[1]
+        workload = (name.split("_")[1]
                     if name.startswith(("daily_", "nlp_")) else name)
         manifest[name] = {
             "path": str(path),
-            "register": register,
+            "workload": workload,
             "thinking": thinking,
             "turns": len(messages),
             "chars": len(text),
             "tail": text[-40:],
         }
-        print(f"{name:18s} reg={register:8s} thinking={str(thinking):5s} "
+        print(f"{name:18s} workload={workload:8s} thinking={str(thinking):5s} "
               f"turns={len(messages)} chars={len(text):6d} tail={text[-32:]!r}")
 
     (out / "manifest.json").write_text(

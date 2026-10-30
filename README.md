@@ -12,16 +12,16 @@ Retraining the EAGLE-3 draft head for Spark-X2.6-4B so speculative decoding pays
 
 ## Results
 
-NLP matrix: 48 prompts across seven registers, `temperature = 1.0`, greedy, through `llama-server` with `--spec-draft-n-max 1`. `p0` is the first-draft acceptance; the verification pass costs about 12%, so speed-up ≈ `(1 + p0) / 1.12`.
+NLP matrix: 48 prompts across seven workloads, `temperature = 1.0`, greedy, through `llama-server` with `--spec-draft-n-max 1`. `p0` is the first-draft acceptance; the verification pass costs about 12%, so speed-up ≈ `(1 + p0) / 1.12`.
 
-| Register | S2a (32K) | S2b (48K) | Δ |
+| Workload | S2a (32K) | S2b (48K) | Δ |
 |---|---:|---:|---:|
 | chat | 0.276 | 0.304 | +0.028 |
-| Chinese → English | 0.449 | **0.601** | +0.152 |
-| English → Chinese | 0.325 | **0.480** | +0.155 |
-| Chinese summary | 0.333 | 0.469 | +0.136 |
-| English → Chinese summary | 0.277 | 0.424 | +0.147 |
-| document organisation | 0.421 | 0.516 | +0.095 |
+| translate Chinese → English | 0.449 | **0.601** | +0.152 |
+| translate English → Chinese | 0.325 | **0.480** | +0.155 |
+| summarise Chinese (zh → zh) | 0.333 | 0.469 | +0.136 |
+| summarise English (en → zh) | 0.277 | 0.424 | +0.147 |
+| organise documents | 0.421 | 0.516 | +0.095 |
 | long context | 0.298 | 0.395 | +0.097 |
 | **all** | **0.344** | **0.460** | **+0.116** |
 
@@ -107,7 +107,7 @@ llama-server -m "$MODELS_DIR/<target>.gguf" -md "$MODELS_DIR/spark-eagle3-s2b-48
 
 ## Known issues
 
-- **Answer phase untrained.** Every generated response hit the `n_predict` budget inside the thinking channel; the D1 gate scores the first 128 tokens (the same register), but long answers after the thinking are not covered.
+- **Answer phase untrained.** Every generated response hit the `n_predict` budget inside the thinking channel; the D1 gate scores the first 128 tokens (the same thinking segment), but long answers after the thinking are not covered.
 - **Chat gains least** (+0.028); chat documents sit near the 1,024-token window and many are skipped by the sampler.
 - **1.30x is an acceptance estimate.**
 - **Vocabulary partly in-sample**: the 16K English ids were ranked with the recorded steps from the same 48 evaluation prompts (weight 50). The head itself was not trained on those prompts.

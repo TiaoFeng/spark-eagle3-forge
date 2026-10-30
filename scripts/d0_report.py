@@ -2,7 +2,7 @@
 """Aggregate an acceptance matrix (D0/D1) into tables.
 
 Reads the JSONL written by ``scripts/d0_matrix.py`` and reports, per
-temperature and register:
+temperature and workload:
 
   * baseline  -- post-sampling top-1 and top-10 mass, i.e. the ceiling
   * greedy    -- eagle3 acceptance and how much of that ceiling it converts
@@ -23,7 +23,7 @@ import json
 import pathlib
 from collections import defaultdict
 
-REGISTER_ORDER = ["chat", "chatnt", "zh2en", "en2zh", "sumzh", "sumen",
+WORKLOAD_ORDER = ["chat", "chatnt", "zh2en", "en2zh", "sumzh", "sumen",
                   "org", "tech", "code", "struct", "longctx"]
 
 
@@ -87,26 +87,27 @@ def fmt(value, digits=3):
     return "-" if value is None else ("%." + str(digits) + "f") % value
 
 
-def register_key(row):
-    return row.get("register") or row.get("name", "?")
+def workload_key(row):
+    # new rows carry "workload"; old D0/D1 logs carry the historical "register"
+    return row.get("workload") or row.get("register") or row.get("name", "?")
 
 
-def ordered(registers):
-    known = [r for r in REGISTER_ORDER if r in registers]
-    return known + sorted(r for r in registers if r not in REGISTER_ORDER)
+def ordered(workloads):
+    known = [r for r in WORKLOAD_ORDER if r in workloads]
+    return known + sorted(r for r in workloads if r not in WORKLOAD_ORDER)
 
 
-def table(title, temps, registers, stats_of):
+def table(title, temps, workloads, stats_of):
     lines = ["### " + title, ""]
-    lines.append("| temp | register | n | steps | value | secondary | tok/s |")
+    lines.append("| temp | workload | n | steps | value | secondary | tok/s |")
     lines.append("|---:|---|---:|---:|---:|---:|---:|")
     for temp in temps:
-        for reg in registers:
-            stat = stats_of(temp, reg)
+        for wl in workloads:
+            stat = stats_of(temp, wl)
             if stat is None:
                 continue
             lines.append("| %.2f | %s | %d | %d | %s | %s | %s |" % (
-                temp, reg, stat["requests"], stat["steps"],
+                temp, wl, stat["requests"], stat["steps"],
                 fmt(stat["primary"]), fmt(stat["secondary"]),
                 fmt(stat["tok_per_s"], 1)))
     lines.append("")
@@ -128,24 +129,24 @@ def main() -> int:
     by_mode = group(rows, lambda r: r["mode"])
     base_by = {}
     for key, recs in group(by_mode.get("baseline", []),
-                           lambda r: (float(r["temp"]), register_key(r))).items():
+                           lambda r: (float(r["temp"]), workload_key(r))).items():
         base_by[key] = base_stats(recs)
     greedy_by = {}
     for key, recs in group(by_mode.get("greedy", []),
-                           lambda r: (float(r["temp"]), register_key(r))).items():
+                           lambda r: (float(r["temp"]), workload_key(r))).items():
         greedy_by[key] = spec_stats(recs)
 
     lines = ["# acceptance matrix", ""]
-    summary = {"temps": temps, "modes": {}, "registers": {}}
+    summary = {"temps": temps, "modes": {}, "workloads": {}}
 
     for mode in ("baseline", "greedy", "probabilistic"):
         if mode not in by_mode:
             continue
-        by = group(by_mode[mode], lambda r: (float(r["temp"]), register_key(r)))
-        registers = ordered({reg for _t, reg in by})
+        by = group(by_mode[mode], lambda r: (float(r["temp"]), workload_key(r)))
+        workloads = ordered({wl for _t, wl in by})
 
-        def stats_of(temp, reg, by=by):
-            recs = by.get((temp, reg))
+        def stats_of(temp, wl, by=by):
+            recs = by.get((temp, wl))
             if not recs:
                 return None
             if mode == "baseline":
@@ -154,14 +155,14 @@ def main() -> int:
                         "primary": s["top1"], "secondary": s["top10"],
                         "tok_per_s": s["tok_per_s"], "raw": s}
             s = spec_stats(recs)
-            ceiling = base_by.get((temp, reg))
+            ceiling = base_by.get((temp, wl))
             if mode == "greedy":
                 ceil = ceiling["top1"] if ceiling else None
             else:
                 # the interesting comparison for probabilistic drafting is the
                 # greedy acceptance at the same temperature, not the (near 1.0)
                 # top-10 mass
-                greedy = greedy_by.get((temp, reg))
+                greedy = greedy_by.get((temp, wl))
                 ceil = greedy["p0"] if greedy else None
             ratio = (s["p0"] / ceil) if (ceil and s["p0"] is not None) else None
             return {"requests": s["requests"], "steps": s["steps"],
@@ -173,10 +174,10 @@ def main() -> int:
             "greedy": "greedy draft: acceptance | p0 / top-1",
             "probabilistic": "probabilistic draft: acceptance | vs greedy",
         }[mode]
-        lines += table(title, temps, registers, stats_of)
+        lines += table(title, temps, workloads, stats_of)
 
-        # overall, token weighted across every register
-        lines.append("**%s, all registers**" % mode)
+        # overall, token weighted across every workload
+        lines.append("**%s, all workloads**" % mode)
         lines.append("")
         lines.append("| temp | n | steps | value | secondary | tok/s |")
         lines.append("|---:|---:|---:|---:|---:|---:|")
@@ -212,19 +213,19 @@ def main() -> int:
     if "baseline" in by_mode:
         lines.append("### baseline: draft-vocabulary coverage of the target top-1")
         lines.append("")
-        lines.append("| temp | register | n | steps | coverage |")
+        lines.append("| temp | workload | n | steps | coverage |")
         lines.append("|---:|---|---:|---:|---:|")
         cov_by = group(by_mode["baseline"],
-                       lambda r: (float(r["temp"]), register_key(r)))
-        registers = ordered({reg for _t, reg in cov_by})
+                       lambda r: (float(r["temp"]), workload_key(r)))
+        workloads = ordered({wl for _t, wl in cov_by})
         for temp in temps:
-            for reg in registers:
-                recs = cov_by.get((temp, reg))
+            for wl in workloads:
+                recs = cov_by.get((temp, wl))
                 if not recs:
                     continue
                 s = base_stats(recs)
                 lines.append("| %.2f | %s | %d | %d | %s |" % (
-                    temp, reg, s["requests"], s["steps"], fmt(s["coverage"])))
+                    temp, wl, s["requests"], s["steps"], fmt(s["coverage"])))
         lines.append("")
 
     text = "\n".join(lines)

@@ -9,7 +9,7 @@ investigation, §3–§5 to the shim and pipeline.
 
 ---
 
-## Baseline: v8 in Chinese registers
+## Baseline: v8 in Chinese workloads
 
 Six fixed workloads, 256 tokens each. `p0` is the share of first drafted tokens the target
 accepts; it is hardware independent, so it compares across machines. Noise is about ±0.03.
@@ -80,7 +80,7 @@ the two agree within 0.02.
 | code | 0.7734 | 0.7695 |
 | copy | 0.5430 | 0.5508 |
 
-The cause is not a register gap, it is that **the vocabulary contains no Chinese**:
+The cause is not a workload gap, it is that **the vocabulary contains no Chinese**:
 
 - A 171-token Chinese prose prompt has **7** tokens inside the 32K set (4.1%), all whitespace or
   ASCII.
@@ -101,7 +101,7 @@ Implications (this changed the project's direction):
 
 ### 2b. The real workload (Simplified Chinese prompts, mixed-language thinking)
 
-The probe set above was my own construction and sits at one end of the register space. A second
+The probe set above was my own construction and sits at one end of the workload space. A second
 measurement used 8 prompts close to actual use (thinking on, 256 tokens each, temp 0.7):
 
 | Workload | coverage | CJK share of output |
@@ -308,7 +308,7 @@ Sources of the gap (they do not change the conclusion, but are worth remembering
 Conclusion: **the chain from feature extraction through head forward, `d2t` and label semantics is
 correct**. G1 exists to catch fatal mistakes — wrong layer index, shifted labels, `d2t` wired
 backwards — all of which would drive p0 to zero or to chance; the ordering and magnitude across the
-five registers now match the online measurement.
+five workloads now match the online measurement.
 
 ---
 
@@ -356,7 +356,7 @@ positions.
 
 | Gate | Condition | Meaning if it fails |
 |---|---|---|
-| G3 probe | `chat_think` **≥ 0.25** | below v8's own 0.2461 → the recipe damaged the register v8 already serves; stop |
+| G3 probe | `chat_think` **≥ 0.25** | below v8's own 0.2461 → the recipe damaged the workload v8 already serves; stop |
 | G3b no forgetting | `code` **≥ 0.18** and `copy` **≥ 0.13** | v8 is 0.1992 / 0.1562; a drop of more than ~0.02–0.03 is forgetting, because only 4,243 of v8's 32,000 `lm_head` rows survive the vocabulary change |
 | G3c the point | realistic mean **≥ 0.25** | v8 is 0.1480 there and the rebuilt vocabulary lifts the coverage ceiling from 0.245 to 0.939; a head that cannot turn that into 0.25 has not learned the new rows |
 | G4 ship | `chat_think` **≥ 0.33** (unchanged) | 1.19x, the number `AGENTS.md` §8 has always carried |
@@ -430,8 +430,8 @@ Two things to read out of it:
   segment, then sits inside the ±0.03 noise band for the remaining 7500 steps. The 27,757
   re-initialised `lm_head` rows are the whole story: once they have seen a few hundred steps of
   their own language, the head can use them.
-- **Only `zh_daily` keeps climbing** (0.16 → 0.29), which is the most purely Chinese register of the
-  four. Registers that already worked (code, `zh_tech`, English-ish thinking) do not improve further.
+- **Only `zh_daily` keeps climbing** (0.16 → 0.29), which is the most purely Chinese workload of the
+  four. Workloads that already worked (code, `zh_tech`, English-ish thinking) do not improve further.
 
 The within-segment validation loss is *not* a usable selection signal here: it drifts up inside every
 segment (4.40 → 4.60 CE in segment 0, and the same shape seven more times) even though `p0` on the
@@ -510,8 +510,8 @@ offline scorer counting every position while llama.cpp counts verification steps
 
 ### 7f. What the numbers say
 
-- **The vocabulary was the whole problem, exactly as §2 predicted.** Every register whose ceiling
-  was limited by coverage moved by roughly what the coverage gain allows; the two registers that were
+- **The vocabulary was the whole problem, exactly as §2 predicted.** Every workload whose ceiling
+  was limited by coverage moved by roughly what the coverage gain allows; the two workloads that were
   already at 0.79–0.80 coverage (`zh_tech`, `zh_code`) did not move.
 - **The cost is a small regression on English-heavy thinking.** `chat_think` and `zh_tech` are the
   only prompts that lost p0 (−0.027/−0.028 online), and they are the two where v8's ASCII vocabulary
@@ -519,7 +519,7 @@ offline scorer counting every position while llama.cpp counts verification steps
   this project, but it means the new head should not be shipped to a purely English workload.
 - **`code` is flat** (0.1992 → 0.2070). It was not the target, and only 10% of the tokens were code;
   the earlier hope that the 4,243 shared `lm_head` rows would preserve it exactly holds, but no more.
-- **More steps buy Chinese small talk, not thinking.** `zh_daily` is the only held-out register that
+- **More steps buy Chinese small talk, not thinking.** `zh_daily` is the only held-out workload that
   improved monotonically, which points at S2b (Chinese thinking traces) rather than more steps of the
   same data for a further gain.
 
@@ -544,7 +544,7 @@ post-sampling probabilities while speculation is enabled.
 
 ### 8b. Protocol
 
-- 46 prompts in six registers (chat, chat without thinking, technical Q&A,
+- 46 prompts in six workloads (chat, chat without thinking, technical Q&A,
   code, structured output, long context), rendered with the model's own chat
   template by `scripts/make_prompts.py --set daily`.
 - temperatures 0.6 / 0.7 / 0.85 / 1.0, `top_p 0.95`, `min_p 0.05`, 128 tokens,
@@ -569,9 +569,9 @@ Overall (46 prompts per temperature):
 | 0.85 | 0.833 | 0.285 | 0.342 | 0.285 | 1.00 |
 | 1.00 | 0.804 | 0.291 | 0.362 | 0.291 | 1.00 |
 
-At the deployment temperature (`temp 1.0`), per register:
+At the deployment temperature (`temp 1.0`), per workload:
 
-| register | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
+| workload | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
 |---|---:|---:|---:|---:|
 | chat | 0.754 | 0.258 | 0.342 | 0.958 |
 | chat, no thinking | 0.757 | 0.276 | 0.364 | 0.975 |
@@ -608,20 +608,20 @@ ring buffer) to 0.67 (`daily_struct_04`, a Markdown table).
      `top_k(10)` only, so the draft is the argmax whatever
      `--spec-draft-sampling` says. The flag only takes effect with
      `--no-spec-draft-backend-sampling`.
-4. **The vocabulary caps the ASCII-heavy registers.** Coverage of the target's
+4. **The vocabulary caps the ASCII-heavy workloads.** Coverage of the target's
    top-1 is 0.75 (code), 0.77 (technical Q&A) and 0.82 (long context), against
    0.96-0.98 for Chinese chat. The rebuilt 32K vocabulary is 84.8% CJK, so it
    is the mirror image of v8: Chinese is covered, code and technical ASCII are
-   not. That is a hard ceiling for those registers, independent of training.
+   not. That is a hard ceiling for those workloads, independent of training.
 
 ### 8e. Decision for the next stage
 
 - S2b/S3 are justified and should be weighted toward the free-form Chinese
-  registers, which sit at 0.31-0.34 (technical Q&A, code, chat); structured
-  output is already the strongest register (0.46).
+  workloads, which sit at 0.31-0.34 (technical Q&A, code, chat); structured
+  output is already the strongest workload (0.46).
 - Before S3, rebuild the draft vocabulary at 48K-64K with a code/ASCII quota if
   code and technical text are a large share of daily tokens; code coverage is
-  0.75 and technical Q&A 0.77, so those registers are capped regardless of the
+  0.75 and technical Q&A 0.77, so those workloads are capped regardless of the
   head.
 - Do not ship `--spec-draft-sampling probabilistic` expecting a gain until the
   head is calibrated (soft labels or a post-hoc `output.weight` scale); the
@@ -641,8 +641,8 @@ tuned for a code-heavy session. D1 measures the actual NLP mix.
 
 ### 9b. Protocol
 
-- 48 prompts in seven registers: chat (6, two multi-turn), Chinese -> English
-  translation (8), English -> Chinese translation (8), Chinese summary (6),
+- 48 prompts in seven workloads: chat (6, two multi-turn), Chinese -> English
+  translation (8), English -> Chinese translation (8), Chinese -> Chinese summary (6),
   English document -> Chinese summary (6), document organisation (8), long
   context (6).
 - Sources are public repo docs (`README.md`, `README.cn.md`, `docs/notes.md`,
@@ -655,12 +655,12 @@ tuned for a code-heavy session. D1 measures the actual NLP mix.
 
 ### 9c. Results
 
-| register | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
+| workload | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
 |---|---:|---:|---:|---:|
 | chat | 0.769 | 0.276 | 0.359 | 0.977 |
 | Chinese -> English | 0.915 | 0.449 | 0.491 | 0.852 |
 | English -> Chinese | 0.913 | 0.325 | 0.356 | 0.814 |
-| Chinese summary | 0.832 | 0.333 | 0.400 | 0.960 |
+| Chinese -> Chinese summary | 0.832 | 0.333 | 0.400 | 0.960 |
 | English -> Chinese summary | 0.844 | 0.277 | 0.328 | 0.892 |
 | document organisation | 0.892 | 0.421 | 0.471 | 0.935 |
 | long context | 0.880 | 0.298 | 0.339 | 0.810 |
@@ -672,20 +672,19 @@ still adds no accepted tokens.
 
 ### 9d. What the numbers say
 
-1. **Translation is the strongest register, not the weakest.** Chinese -> English
+1. **Translation is the strongest workload, not the weakest.** Chinese -> English
    reaches 0.449 at half of its ceiling (0.491), and English -> Chinese 0.325 at
    0.356. The source text constrains the output, so the target is predictable and
    the head converts that well.
-2. **Summarisation is the weakest.** English -> Chinese summary 0.277, Chinese
-   summary 0.333, long-context summary/organisation 0.298, efficiency 0.33-0.40.
+2. **Summarisation is the weakest.** English -> Chinese summary 0.277, Chinese -> Chinese summary 0.333, long-context summary/organisation 0.298, efficiency 0.33-0.40.
    A summary is a paraphrase, so the target's own choice is less constrained and
    the head has less to latch onto.
 3. **Organisation is strong** (0.421, 0.471), consistent with D0's structured
    output (0.407, 0.462): constrained formats are where this head wins.
 4. **Chat stays head-limited** (0.276 at coverage 0.977), exactly as in D0.
-5. **The vocabulary binds the English-heavy registers.** Coverage is 0.81-0.89
+5. **The vocabulary binds the English-heavy workloads.** Coverage is 0.81-0.89
    for both translation directions, English -> Chinese summary and long context,
-   against 0.96-0.98 for chat and Chinese summary. The 32K vocabulary is 84.8%
+   against 0.96-0.98 for chat and Chinese -> Chinese summary. The 32K vocabulary is 84.8%
    CJK, so the bilingual workload has a structural cap there.
 
 ### 9e. Decision
@@ -697,11 +696,11 @@ still adds no accepted tokens.
 - **Warm-start from `checkpoints/s2a.pt`, not v8**: copy the 32K `lm_head` rows
   and randomly initialise the 16,000 new English rows. `init_head.py` currently
   starts from v8, so a `--from-checkpoint` path is needed.
-- **Then S2b with the 48K head**, weighted to the weak registers: summarisation
+- **Then S2b with the 48K head**, weighted to the weak workloads: summarisation
   30%, translation 25% (more English -> Chinese), organisation 20%, chat 20%,
   other 5%; long-context shards 30% of tokens.
 - **Gates**: NLP mix mean p0 >= 0.40; English -> Chinese >= 0.40; English ->
-  Chinese summary >= 0.35; coverage >= 0.90 on every register; online wall clock
+  Chinese summary >= 0.35; coverage >= 0.90 on every workload; online wall clock
   >= 1.3x. Re-run D1 after S2b.
 
 ---
@@ -718,7 +717,7 @@ work is bilingual. The next structural step was a 48K vocabulary that keeps the
 ### 10b. Method
 
 - Record greedy steps for the 48 NLP prompts (`scripts/record_steps.py`), in the
-  same `[register, token, argmax, cjk]` layout `eval_vocab.py` consumes.
+  same `[workload, token, argmax, cjk]` layout `eval_vocab.py` consumes.
 - Build the union (`scripts/build_union_vocab.py`): keep the 32,000 base ids in
   their original order, append the 16,000 most frequent missing target ids from
   one English Wikipedia shard (20M chars) plus the recorded steps at weight 50.
@@ -780,7 +779,7 @@ writes one JSONL record per request:
 | long | 120 | 24k-character document -> integrated summary / outline | high 2/3, low 1/3 |
 
 The document is the rendered chat prompt plus the target's continuation, so
-training sees the prompt distribution and the thinking/answer register. The
+training sees the prompt distribution and the thinking/answer channels. The
 `long` records are the long-context shards (~30% of the token budget). The
 generator is resumable and writes `datasets/nlp/*.jsonl`.
 
@@ -821,12 +820,12 @@ A 20k-token, 20-step run on a 1% generated sample:
 
 ### 11f. D1 gate (same 48 prompts, temp 1.0, greedy)
 
-| register | S2a (32K) | S2b (48K) | delta |
+| workload | S2a (32K) | S2b (48K) | delta |
 |---|---:|---:|---:|
 | chat | 0.276 | 0.304 | +0.028 |
 | Chinese -> English | 0.449 | 0.601 | +0.152 |
 | English -> Chinese | 0.325 | 0.480 | +0.155 |
-| Chinese summary | 0.333 | 0.469 | +0.136 |
+| Chinese -> Chinese summary | 0.333 | 0.469 | +0.136 |
 | English -> Chinese summary | 0.277 | 0.424 | +0.147 |
 | document organisation | 0.421 | 0.516 | +0.095 |
 | long context | 0.298 | 0.395 | +0.097 |
@@ -835,7 +834,7 @@ A 20k-token, 20-step run on a 1% generated sample:
 Coverage with the 48K vocabulary is 0.979-0.995, against 0.81-0.98 with 32K.
 The head converts 0.529 of the target's top-1 probability, up from 0.396. The
 estimated speed-up `(1 + 0.460) / 1.12` is **1.30x** on this mix, against 1.20x
-for S2a. The plan's gate (mean >= 0.40, every register >= 0.35, coverage >=
+for S2a. The plan's gate (mean >= 0.40, every workload >= 0.35, coverage >=
 0.90) passes.
 
 This comparison changes both the head and the vocabulary, so the +0.116 is the
@@ -848,7 +847,7 @@ in-domain data added.
 - every generated response hit the `n_predict` budget, so the documents are the
   target's thinking channel and never reach the answer after the thinking
   channel closes. The D1 prompts score the first 128 tokens, which is the same
-  register, so the gate is aligned; the answer phase is untrained. S3 should add
+  workload, so the gate is aligned; the answer phase is untrained. S3 should add
   no-thinking or longer-budget samples.
 - the chat gain is the smallest (+0.028). The chat documents sit near the
   1024-token window, and many are skipped by `WindowSampler`.
@@ -881,8 +880,8 @@ about a third of the target's top-1 ceiling, temperature and probabilistic draft
 nothing, and the 48K bilingual vocabulary lifts held-out coverage from 0.939 to 0.971 overall
 (0.684 to 0.960 on English text). The next stage:
 
-1. **S2b (register)**: done (§11). 3.46M generated tokens, D1 mean 0.344 -> 0.460, every
-   register up. The answer phase remains untrained because the generated responses stop
+1. **S2b (workload)**: done (§11). 3.46M generated tokens, D1 mean 0.344 -> 0.460, every
+   workload up. The answer phase remains untrained because the generated responses stop
    inside the thinking channel.
 2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, a no-thinking / answer slice, and
    a last-mile pass on the daily mix; D1 is the gate.

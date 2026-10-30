@@ -126,7 +126,7 @@ def iter_nlp_docs(paths, budget_chars: int, skip_chars: int = 0):
     The prompt is the rendered chat template (system + user + assistant
     prefix); the response is the target's own continuation. Training on the
     whole document teaches the draft the prompt distribution as well as the
-    thinking/answer register.
+    thinking/answer channels.
     """
     consumed = 0
     emitted = 0

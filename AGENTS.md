@@ -1,7 +1,7 @@
 # AGENTS.md — spark-eagle3-forge
 
 Retrain the EAGLE-3 draft head for Spark-X2.6-4B (FIT-Q6_K abliterated). The goal is a higher
-draft acceptance rate in the **Chinese + thinking** register, so speculative decoding speeds up
+draft acceptance rate in the **Chinese + thinking** workload, so speculative decoding speeds up
 single-sequence decode.
 
 The upstream public head `VitreousCut/Spark-X2.6-4B-EAGLE3` (v8) only reaches p0 0.01–0.33 in
@@ -22,7 +22,7 @@ G0, G1 and G2 pass, and S2a has run: 8M unique tokens over 8000 steps.
 **`checkpoints/s2a.pt` / `spark-eagle3-s2a.gguf` replace v8 on Chinese workloads** — mean p0 over
 the eight realistic Chinese prompts 0.148 → 0.316 offline and 0.148 → 0.348 through llama.cpp, with
 a measured 1.19x decode speed-up on the same mix. `chat_think` misses G4 by 0.002 (0.3281 vs 0.33)
-and the two English-heavy registers lose about 0.03. Gates in §8, stages in §11, evidence in
+and the two English-heavy workloads lose about 0.03. Gates in §8, stages in §11, evidence in
 `docs/notes.md` §6 (protocol, fixed before the run) and §7 (run and results).
 
 D0 (2026-10-30) measured the deployment sampler: the target's top-1 ceiling is 0.80 at temp 1.0
@@ -31,7 +31,7 @@ identical to greedy. The head, not the temperature, is the next target; see `doc
 
 D1 measured the NLP mix (translation, summarisation, organisation, chat): overall p0 0.344 at a
 0.869 ceiling, strongest on Chinese → English (0.449) and organisation (0.421), weakest on
-summarisation (0.277–0.333). The English-heavy registers are coverage-capped at 0.81–0.89, so a
+summarisation (0.277–0.333). The English-heavy workloads are coverage-capped at 0.81–0.89, so a
 48K bilingual vocabulary is the next step; see `docs/notes.md` §9.
 
 D2 built that vocabulary: 32K base + 16K English, warm-started from S2a. On held-out steps it
@@ -39,7 +39,7 @@ lifts coverage 0.939 → 0.971 overall and 0.684 → 0.960 on English text, and 
 llama.cpp. S2b/S3 use `d2t_v2_48k.i32` and `head_init_48k.pt`; see `docs/notes.md` §10.
 
 S2b is done: 3.46M generated NLP tokens, 4 segments, 2000 steps. On the D1 matrix
-the NLP mix rises 0.344 → 0.460 (all seven registers up; Chinese → English +0.152, English →
+the NLP mix rises 0.344 → 0.460 (all seven workloads up; Chinese → English +0.152, English →
 Chinese +0.155) and coverage is 0.979–0.995 with the 48K vocabulary. See `docs/notes.md` §11.
 
 ## 1. Hard constraints (non-negotiable)
@@ -161,7 +161,7 @@ spark-eagle3-forge/
 │   ├── init_head.py           # v8 → warm-start checkpoint aligned to the new vocabulary
 │   ├── make_prompts.py        # render probes with the model's own chat template
 │   ├── g1_online.py           # online p0 through llama-server
-│   ├── d0_matrix.py           # D0: temperature × sampling × register acceptance
+│   ├── d0_matrix.py           # D0: temperature × sampling × workload acceptance
 │   ├── d0_report.py           # D0: aggregate the matrix into tables
 │   ├── record_steps.py        # record greedy steps for vocabulary scoring
 │   ├── build_union_vocab.py   # 48K union: keep the base ids, append English ids
@@ -379,7 +379,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | Oversized memfd → OOM killer takes the process silently | check capacity before writing; checkpoint after every segment |
 | Desktop competing for RAM / VRAM | close browsers and move the desktop to the iGPU before training |
 | `llama-ext.h` is private and C++-linked | compile the shim as C++ and declare the prototypes by hand; never guess struct layout with ctypes |
-| The vocabulary caps p0 ([facts.md §2.3](docs/facts.md#23-the-hard-ceiling-on-p0-a-32k-draft-vocabulary)) | measure per-register coverage before training; change the vocabulary first if it is short |
+| The vocabulary caps p0 ([facts.md §2.3](docs/facts.md#23-the-hard-ceiling-on-p0-a-32k-draft-vocabulary)) | measure per-workload coverage before training; change the vocabulary first if it is short |
 | F32 → bf16 feature rounding | the evaluator must round identically so train and eval agree |
 | Unusual RoPE geometry (64 dims global / 256 swa) | let llama.cpp compute positions; never replicate it in Python |
 | Chunk boundaries | decode one extra token per chunk so the shifted label exists; clear the KV cache between chunks |
@@ -406,7 +406,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | S1 | End-to-end extraction + G1 | ✅ |
 | **S2a** | 8M unique tokens (public corpora) + 8k steps + G3/G3b/G3c | ✅ G4 missed by 0.002 |
 | **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
-| **D1** | NLP register matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
+| **D1** | NLP workload matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
 | **S2b** | NLP mixture + long-context shards, 48K head (3.46M tokens) | ✅ D1 0.344 → 0.460 |
 | S3 | Scale to 12–16M tokens with the S2b mixture | final head |

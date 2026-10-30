@@ -204,7 +204,8 @@ def run_mode(args, mode: str, prompts, done: set[str], out_fh) -> int:
                     "mode": mode,
                     "temp": temp,
                     "name": name,
-                    "register": rec.get("register", name),
+                    # old prompts carry "register"; new ones carry "workload"
+                    "workload": rec.get("workload") or rec.get("register", name),
                     "seconds": round(elapsed, 3),
                     "n_predicted": timings.get("predicted_n"),
                     "tok_per_s": timings.get("predicted_per_second"),
