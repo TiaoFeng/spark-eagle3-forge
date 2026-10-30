@@ -499,7 +499,7 @@ tokens, 4096 context:
 | chat_think | 0.3263 | 0.2990 | −0.027 |
 | **mean of 5** | **0.1481** | **0.3480** | +0.200 |
 
-Wall clock over the same 5 × 128 tokens: **12.6 ms/token → 10.6 ms/token, 1.19x**. That is the first
+The same 5 × 128 tokens measured **1.19x** faster. That is the first
 end-to-end confirmation on this machine that the p0 gains convert into decode speed, and it agrees
 with $(1+0.348)/1.12 = 1.20$.
 
@@ -804,9 +804,9 @@ chat 0.15 / long 0.30, starting from `head_init_48k.pt`; 2000 steps of
 
 A 20k-token, 20-step run on a 1% generated sample:
 
-- extraction 2,299 tok/s, 0.3 GiB resident;
+- extraction completed with 0.3 GiB resident;
 - label coverage (48K vocabulary): chat 0.948, long 0.991;
-- training 20 steps in 2.2 s, no failures;
+- training 20 steps completed, no failures;
 - `s2b.pt` loads and the 48K logits are produced.
 
 ### 11e. The full run
@@ -816,7 +816,7 @@ A 20k-token, 20-step run on a 1% generated sample:
 - training: 4 segments, 997,749 + 993,483 + 850,464 + 616,570 = **3,458,266
   rows**. Segment 3 has no long-context rows because the generated `long` file
   was exhausted; the 4M target ended at 3.46M.
-- 2000 steps in 25.4 min. Final train CE 2.015, top-1 0.657; held-out CE 2.186.
+- 2000 steps. Final train CE 2.015, top-1 0.657; held-out CE 2.186.
 - label coverage on segment 0 (48K vocabulary): 0.973-0.983.
 
 ### 11f. D1 gate (same 48 prompts, temp 1.0, greedy)
