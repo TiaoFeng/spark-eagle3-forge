@@ -809,8 +809,51 @@ A 20k-token, 20-step run on a 1% generated sample:
 - training 20 steps in 2.2 s, no failures;
 - `s2b.pt` loads and the 48K logits are produced.
 
-The full generation and training run is in progress; the measured p0 will be
-recorded here when it finishes.
+### 11e. The full run
+
+- generation: 3,520 / 3,520 records, 0 failures, 11.38M characters, ~4.78M
+  tokens (sum 864k / trans 1.67M / org 573k / chat 807k / long 866k).
+- training: 4 segments, 997,749 + 993,483 + 850,464 + 616,570 = **3,458,266
+  rows**. Segment 3 has no long-context rows because the generated `long` file
+  was exhausted; the 4M target ended at 3.46M.
+- 2000 steps in 25.4 min. Final train CE 2.015, top-1 0.657; held-out CE 2.186.
+- label coverage on segment 0 (48K vocabulary): 0.973-0.983.
+
+### 11f. D1 gate (same 48 prompts, temp 1.0, greedy)
+
+| register | S2a (32K) | S2b (48K) | delta |
+|---|---:|---:|---:|
+| chat | 0.276 | 0.304 | +0.028 |
+| Chinese -> English | 0.449 | 0.601 | +0.152 |
+| English -> Chinese | 0.325 | 0.480 | +0.155 |
+| Chinese summary | 0.333 | 0.469 | +0.136 |
+| English -> Chinese summary | 0.277 | 0.424 | +0.147 |
+| document organisation | 0.421 | 0.516 | +0.095 |
+| long context | 0.298 | 0.395 | +0.097 |
+| **all** | **0.344** | **0.460** | **+0.116** |
+
+Coverage with the 48K vocabulary is 0.979-0.995, against 0.81-0.98 with 32K.
+The head converts 0.529 of the target's top-1 probability, up from 0.396. The
+estimated speed-up `(1 + 0.460) / 1.12` is **1.30x** on this mix, against 1.20x
+for S2a. The plan's gate (mean >= 0.40, every register >= 0.35, coverage >=
+0.90) passes.
+
+This comparison changes both the head and the vocabulary, so the +0.116 is the
+combined effect. D2's coverage table separates the ceiling from the head: the
+48K vocabulary lifts coverage, and the S2b efficiency (0.529) is what the
+in-domain data added.
+
+### 11g. Caveats
+
+- every generated response hit the `n_predict` budget, so the documents are the
+  target's thinking channel and never reach the answer after the thinking
+  channel closes. The D1 prompts score the first 128 tokens, which is the same
+  register, so the gate is aligned; the answer phase is untrained. S3 should add
+  no-thinking or longer-budget samples.
+- the chat gain is the smallest (+0.028). The chat documents sit near the
+  1024-token window, and many are skipped by `WindowSampler`.
+- a controlled wall-clock A/B (the G1 procedure) has not been run for S2b; the
+  1.30x is the acceptance-based estimate, not a measured decode time.
 
 ---
 
@@ -838,11 +881,11 @@ about a third of the target's top-1 ceiling, temperature and probabilistic draft
 nothing, and the 48K bilingual vocabulary lifts held-out coverage from 0.939 to 0.971 overall
 (0.684 to 0.960 on English text). The next stage:
 
-1. **S2b (register)**: the generator and contiguous trainer are in place; the full run is in
-   progress on `d2t_v2_48k.i32` and `head_init_48k.pt` (summarisation 30% / translation 25% /
-   organisation 20% / chat 20%, long-context shards 30%). A recipe check, not the final run.
-2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture and a last-mile pass on the daily
-   mix; D1 is the gate.
+1. **S2b (register)**: done (§11). 3.46M generated tokens, D1 mean 0.344 -> 0.460, every
+   register up. The answer phase remains untrained because the generated responses stop
+   inside the thinking channel.
+2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, a no-thinking / answer slice, and
+   a last-mile pass on the daily mix; D1 is the gate.
 
 Probabilistic drafting and the sampling temperature are not training levers at present; they stay
 parked until the head is calibrated.

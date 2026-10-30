@@ -38,10 +38,9 @@ D2 built that vocabulary: 32K base + 16K English, warm-started from S2a. On held
 lifts coverage 0.939 → 0.971 overall and 0.684 → 0.960 on English text, and the 48K head loads in
 llama.cpp. S2b/S3 use `d2t_v2_48k.i32` and `head_init_48k.pt`; see `docs/notes.md` §10.
 
-S2b is in progress: `scripts/gen_nlp_data.py` generates the target's own NLP output
-(summary / translation / organisation / chat plus long-context shards) and
-`scripts/train_s2b.py` trains the 48K head with contiguous features and mixed-token TTT.
-See `docs/notes.md` §11.
+S2b is done: 3.46M generated NLP tokens, 4 segments, 2000 steps in 25.4 min. On the D1 matrix
+the NLP mix rises 0.344 → 0.460 (all seven registers up; Chinese → English +0.152, English →
+Chinese +0.155) and coverage is 0.979–0.995 with the 48K vocabulary. See `docs/notes.md` §11.
 
 ## 1. Hard constraints (non-negotiable)
 
@@ -409,7 +408,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
 | **D1** | NLP register matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
-| S2b | NLP mixture + long-context shards, 48K head (4M recipe check) | 🚧 generator/trainer in place, full run in progress |
+| **S2b** | NLP mixture + long-context shards, 48K head (3.46M tokens) | ✅ D1 0.344 → 0.460 |
 | S3 | Scale to 12–16M tokens with the S2b mixture | final head |
 
 ### S2a, as it ran
