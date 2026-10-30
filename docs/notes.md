@@ -525,12 +525,118 @@ offline scorer counting every position while llama.cpp counts verification steps
 
 ---
 
+## 8. D0: the deployment-matched acceptance matrix
+
+### 8a. Why the gate number and the daily number differed
+
+`scripts/g1_online.py` sends `temperature = 0.0`, so every S2a gate reports
+greedy acceptance. A real session samples. D0 measures the same prompts under
+three server configurations:
+
+| Mode | Server | What it measures |
+|---|---|---|
+| baseline | no draft head | post-sampling top-1 probability and top-10 mass |
+| greedy | `draft-eagle3`, n-max 1 | the head's argmax acceptance |
+| probabilistic | the same + `--spec-draft-sampling probabilistic` | sampled drafts verified by rejection |
+
+The baseline is a separate process because llama.cpp does not report
+post-sampling probabilities while speculation is enabled.
+
+### 8b. Protocol
+
+- 46 prompts in six registers (chat, chat without thinking, technical Q&A,
+  code, structured output, long context), rendered with the model's own chat
+  template by `scripts/make_prompts.py --set daily`.
+- temperatures 0.6 / 0.7 / 0.85 / 1.0, `top_p 0.95`, `min_p 0.05`, 128 tokens,
+  seed 1234, `cache_prompt = false`.
+- acceptance is token weighted: `sum(accepted) / sum(generated)`.
+- the baseline asks for `n_probs = 10` with `post_sampling_probs = true`; the
+  per-token maximum is the ceiling for a perfect greedy draft, and the top-10
+  sum is the theoretical ceiling for a perfect probabilistic draft.
+- `scripts/d0_matrix.py` writes one JSON line per request and is resumable;
+  `scripts/d0_report.py` aggregates.
+- the prompt set is synthetic and public; the long-context prompts use
+  `docs/notes.md` and `docs/facts.md` as context.
+
+### 8c. Results
+
+Overall (46 prompts per temperature):
+
+| temp | ceiling top-1 | greedy p0 | p0 / ceiling | probabilistic p0 | vs greedy |
+|---:|---:|---:|---:|---:|---:|
+| 0.60 | 0.879 | 0.292 | 0.332 | 0.292 | 1.00 |
+| 0.70 | 0.858 | 0.291 | 0.339 | 0.291 | 1.00 |
+| 0.85 | 0.833 | 0.285 | 0.342 | 0.285 | 1.00 |
+| 1.00 | 0.804 | 0.291 | 0.362 | 0.291 | 1.00 |
+
+At the deployment temperature (`temp 1.0`), per register:
+
+| register | ceiling top-1 | greedy p0 | p0 / ceiling | coverage |
+|---|---:|---:|---:|---:|
+| chat | 0.754 | 0.258 | 0.342 | 0.958 |
+| chat, no thinking | 0.757 | 0.276 | 0.364 | 0.975 |
+| technical Q&A | 0.761 | 0.238 | 0.313 | 0.771 |
+| code | 0.779 | 0.249 | 0.319 | 0.749 |
+| structured output | 0.882 | 0.407 | 0.462 | 0.895 |
+| long context | 0.913 | 0.346 | 0.379 | 0.819 |
+
+Per-prompt efficiency at temp 1.0 ranges from 0.19 (`daily_code_03`, a C++
+ring buffer) to 0.67 (`daily_struct_04`, a Markdown table).
+
+### 8d. What the numbers say
+
+1. **The head is the bottleneck, not the ceiling.** The target's top-1
+   probability is 0.80 at temp 1.0 and the head converts about a third of it
+   (0.29). The training top-1 of S2a was 0.61, so the gap is the deployment
+   distribution, not the optimiser: the head does much better on the training
+   mix than on the model's own thinking and chat output.
+2. **Temperature is not a lever.** With the daily sampler (`min_p 0.05`) the
+   ceiling only falls from 0.879 to 0.804 between temp 0.6 and 1.0, and the
+   absolute acceptance is flat (0.285-0.292). Lowering the temperature is not a
+   free speed-up for this head. The earlier v8 probe reported a large
+   0.7 -> 1.0 drop; that does not reproduce here, so it should not be assumed
+   for the current head.
+3. **Probabilistic drafting currently adds nothing.** An offline replay of the
+   head gives a mean top-1 probability of 0.40 (median 0.31), so the
+   distribution is not a point mass. The host-sampler pass does draft tokens
+   outside the argmax (the verbose log shows a token outside the top 3), yet
+   the accepted/generated counts are identical to greedy for all 184
+   prompt x temperature pairs. The head is uncertain exactly where it is wrong:
+   the extra samples land on positions the target rejects anyway, while at
+   confident positions (p ~ 0.99) the sample is the argmax.
+   - The default `--spec-draft-backend-sampling` builds a backend chain with
+     `top_k(10)` only, so the draft is the argmax whatever
+     `--spec-draft-sampling` says. The flag only takes effect with
+     `--no-spec-draft-backend-sampling`.
+4. **The vocabulary caps the ASCII-heavy registers.** Coverage of the target's
+   top-1 is 0.75 (code), 0.77 (technical Q&A) and 0.82 (long context), against
+   0.96-0.98 for Chinese chat. The rebuilt 32K vocabulary is 84.8% CJK, so it
+   is the mirror image of v8: Chinese is covered, code and technical ASCII are
+   not. That is a hard ceiling for those registers, independent of training.
+
+### 8e. Decision for the next stage
+
+- S2b/S3 are justified and should be weighted toward the free-form Chinese
+  registers, which sit at 0.31-0.34 (technical Q&A, code, chat); structured
+  output is already the strongest register (0.46).
+- Before S3, rebuild the draft vocabulary at 48K-64K with a code/ASCII quota if
+  code and technical text are a large share of daily tokens; code coverage is
+  0.75 and technical Q&A 0.77, so those registers are capped regardless of the
+  head.
+- Do not ship `--spec-draft-sampling probabilistic` expecting a gain until the
+  head is calibrated (soft labels or a post-hoc `output.weight` scale); the
+  current distribution has no useful mass on the target's alternatives.
+- Re-run D0 after S2b with the same matrix; it is the gate.
+
+---
+
 ## Open questions
 
-1. ~~**Draft vocabulary**~~ — **resolved in §2c**: the rebuilt 32K vocabulary reaches 0.939
-   coverage on the recorded steps, and `checkpoints/head_init.pt` already carries its `lm_head`
-   rows. Changing the vocabulary again would invalidate that checkpoint, so the decision is
-   frozen unless coverage turns out to be the binding constraint after training.
+1. ~~**Draft vocabulary**~~ — **reopened by §8**: the rebuilt 32K vocabulary reaches 0.939
+   coverage on the recorded steps, but D0 measures only 0.75 (code) and 0.77 (technical Q&A)
+   on the daily mix. If those registers carry a large share of daily tokens, a 48K-64K rebuild
+   with a code/ASCII quota is worth the retraining before S3; otherwise the 32K vocabulary and
+   `checkpoints/head_init.pt` stay.
 2. **Feature precision bf16 vs F32**: v8's weights are F32, bf16 is purely a capacity trade
    (2.79M vs 1.4M tokens). Train two short runs on the same data and compare p0.
 3. **Contiguous KV within a chunk**: keeping it is closer to live long-context behaviour, but the
@@ -538,18 +644,22 @@ offline scorer counting every position while llama.cpp counts verification steps
    tokens of context.
 4. **How much of the remaining gap is data volume?** 2.05 epochs per segment is still repetition;
    §7c shows the gain saturating by step 500, so the next marginal step is *more unique tokens*
-   (S3, 22M) rather than more steps.
+   (S3, 12–16M) rather than more steps.
 5. **`lambda` for the training-time test**: 0.5 was a guess (§7a). A/B it now that the pipeline is
    cheap: two 2000-step runs with 0 and 1.0 would bracket the useful range.
 
 ## Next step
 
-S2a is done (§7). The next decision is between two paths, and they are not exclusive:
+D0 (§8) settles what S2a left open: the head converts about a third of a target top-1 ceiling of
+0.80 at the deployment temperature, while the temperature and probabilistic drafting change
+nothing. The next stage is therefore:
 
-- **S3 (scale)**: 22M unique tokens instead of 8M. Extraction is the cost (it scales with the token
-  count) and the 8 GiB-per-segment layout does not change. This is the only lever that addresses
-  question 4.
-- **S2b (register)**: §7c shows the gain concentrating in registers that were *coverage*-limited,
-  and `zh_daily` — the most purely Chinese prompt — still improving at step 8000. Generating
-  Chinese thinking traces and adding them as a fifth domain targets the register that v8 handles
-  worst instead of adding more of the same text.
+1. **S2b (register)**: ~4M tokens with Chinese thinking traces, a code/structured share matched to
+   daily use, long-context shards, and TTT token mixing. It is a recipe check, not the final run.
+2. **Vocabulary decision**: if code and technical text carry a large share of daily tokens,
+   rebuild `d2t` at 48K-64K before S3; D0 measures 0.75-0.77 coverage there.
+3. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, then a last-mile pass on the daily
+   mix. D0 is the gate.
+
+Probabilistic drafting and the sampling temperature are not training levers at present; they stay
+parked until the head is calibrated.

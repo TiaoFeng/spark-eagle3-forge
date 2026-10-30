@@ -25,6 +25,10 @@ a measured 1.19x decode speed-up on the same mix. `chat_think` misses G4 by 0.00
 and the two English-heavy registers lose about 0.03. Gates in §8, stages in §11, evidence in
 `docs/notes.md` §6 (protocol, fixed before the run) and §7 (run and results).
 
+D0 (2026-10-30) measured the deployment sampler: the target's top-1 ceiling is 0.80 at temp 1.0
+(0.88 at 0.6), the head converts about a third of it (0.29), and probabilistic drafting is still
+identical to greedy. The head, not the temperature, is the next target; see `docs/notes.md` §8.
+
 ## 1. Hard constraints (non-negotiable)
 
 Every approach must satisfy all of these:
@@ -144,6 +148,8 @@ spark-eagle3-forge/
 │   ├── init_head.py           # v8 → warm-start checkpoint aligned to the new vocabulary
 │   ├── make_prompts.py        # render probes with the model's own chat template
 │   ├── g1_online.py           # online p0 through llama-server
+│   ├── d0_matrix.py           # D0: temperature × sampling × register acceptance
+│   ├── d0_report.py           # D0: aggregate the matrix into tables
 │   ├── check_public.sh        # leak check (also installed as a pre-commit hook)
 │   └── install_hooks.sh       # install that hook locally
 ├── configs/                   # reserved for stage configs; currently empty
@@ -256,6 +262,19 @@ csrc/build/sp_feat_cli --model "$MODELS_DIR/<target>.gguf" \
     --model "$MODELS_DIR/<target>.gguf" --head "$MODELS_DIR/spark-eagle3-v8.gguf" \
     --prompt-file datasets/prompts/rendered/zh_tech.txt \
     --n-predict 128 --out logs/g1_online.json --server-log logs/g1_server.log
+
+# D0: deployment-matched acceptance (baseline ceiling, greedy, probabilistic);
+# one server per mode, resumable, writes one JSON line per request.
+# add --extra-arg=--no-spec-draft-backend-sampling to make probabilistic sample
+.venv/bin/python scripts/make_prompts.py --model "$MODELS_DIR/<target>.gguf" \
+    --out-dir datasets/prompts/daily --set daily
+.venv/bin/python scripts/d0_matrix.py \
+    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+    --model "$MODELS_DIR/<target>.gguf" --head "$MODELS_DIR/spark-eagle3-s2a.gguf" \
+    --prompt-dir datasets/prompts/daily \
+    --out logs/d0_requests.jsonl --log-dir logs/d0
+.venv/bin/python scripts/d0_report.py --requests logs/d0_requests.jsonl \
+    --out-md logs/d0_report.md --out-json logs/d0_report.json
 ```
 
 ### What "verified" means here
@@ -352,8 +371,9 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 |---|---|---|
 | S1 | End-to-end extraction + G1 | ✅ |
 | **S2a** | 8M unique tokens (public corpora) + 8k steps + G3/G3b/G3c | ✅ G4 missed by 0.002 |
-| S2b | Conditional: generate ~1.2M tokens of Chinese thinking traces | open |
-| S3 | Scale to 22M tokens | final head |
+| **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
+| S2b | Chinese thinking traces + code/structured mix + long-context shards (4M recipe check) | open |
+| S3 | Scale to 12–16M tokens with the S2b mixture | final head |
 
 ### S2a, as it ran
 
