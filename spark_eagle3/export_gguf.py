@@ -96,7 +96,10 @@ def main() -> int:
     ap.add_argument("--tokenizer-from", default="",
                     help="GGUF whose tokenizer.* metadata is reused "
                          "(default: %s)" % DEFAULT_TOKENIZER_FROM)
-    ap.add_argument("--name", default="spark-eagle3-s2a")
+    ap.add_argument("--name", default="",
+                    help="general.name; default: the output filename stem")
+    ap.add_argument("--size-label", default="",
+                    help="general.size_label; default: the parameter count of the checkpoint")
     ap.add_argument("--dtype", choices=("bf16", "float32"), default="bf16")
     ap.add_argument("--skip-weights", action="store_true",
                     help="write an all-zero head (layout smoke test)")
@@ -125,12 +128,15 @@ def main() -> int:
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    n_params = sum(int(v.numel()) for k, v in sd.items() if k != "d2t")
+    name = args.name or out.stem
+    size_label = args.size_label or ("%.1fM" % (n_params / 1e6))
 
     w = GGUFWriter(str(out), "eagle3")
     kv = {
         "general.type": (GGUFValueType.STRING, "model"),
-        "general.name": (GGUFValueType.STRING, args.name),
-        "general.size_label": (GGUFValueType.STRING, "218M"),
+        "general.name": (GGUFValueType.STRING, name),
+        "general.size_label": (GGUFValueType.STRING, size_label),
         "general.file_type": (GGUFValueType.UINT32, 32 if args.dtype == "bf16" else 0),
         "general.quantization_version": (GGUFValueType.UINT32, 2),
         "eagle3.target_layers": (GGUFValueType.ARRAY, list(layers), GGUFValueType.INT32),
@@ -213,6 +219,8 @@ def main() -> int:
     print("round-trip: %d tensors, d2t exact, worst |diff| %.3e on %s"
           % (len(TENSOR_MAP) + 1, worst, worst_name), flush=True)
     print(json.dumps({"out": str(out), "tensors": len(r.tensors),
+                      "name": name, "size_label": size_label,
+                      "parameters": n_params,
                       "draft_vocab_size": int(d2t.size),
                       "file_type": "bf16" if args.dtype == "bf16" else "float32"},
                      indent=2), flush=True)
