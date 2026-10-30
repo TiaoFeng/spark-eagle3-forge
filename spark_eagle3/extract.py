@@ -56,6 +56,9 @@ def build_sources(args):
     for path in args.wiki or []:
         out.append(("wikipedia_zh", lambda p=path: corpus.iter_wikipedia(
             p, args.chars_per_source, skip)))
+    for path in getattr(args, "nlp", None) or []:
+        out.append(("nlp", lambda p=path: corpus.iter_nlp_docs(
+            [p], args.chars_per_source, skip)))
     for path in getattr(args, "code", None) or []:
         out.append(("code", lambda p=path: corpus.iter_code_dirs(
             [p], args.chars_per_source, skip)))
@@ -126,12 +129,83 @@ def extract_into(shim: Shim, store: FeatureStore, sources, *, chunk: int,
     }
 
 
+def extract_contiguous_into(shim: Shim, store: FeatureStore, sources, *, n_ctx: int,
+                            chunk: int, max_tokens: int, start_row: int = 0,
+                            in_set=None) -> dict:
+    """Decode each document with a contiguous KV cache (up to `n_ctx` tokens).
+
+    Unlike `extract_into`, sub-batches do not reset the KV cache, so a feature
+    at row p sees the whole document prefix. The sub-batch size is `chunk`; the
+    shim context must allow `n_ctx >= the longest document` and
+    `n_batch >= chunk`. One `chunks` entry is emitted per document, so the
+    trainer never samples across a document boundary.
+    """
+    n_rows = 0
+    n_docs = 0
+    n_chunks = 0
+    n_sub = 0
+    label_hits = 0
+    label_checked = 0
+    chunks: list[list[int]] = []
+    per_source: dict[str, int] = {}
+
+    for name, factory in sources:
+        before = n_rows
+        for text in factory():
+            if n_rows >= max_tokens:
+                break
+            ids = shim.tokenize(text, add_special=False)
+            if ids.size < 2:
+                continue
+            n_docs += 1
+            take = min(ids.size - 1, max_tokens - n_rows, n_ctx - 1)
+            if take <= 0:
+                break
+            doc = ids[:take + 1]
+            store.require(start_row + n_rows + doc.size)
+
+            shim.reset()
+            argmax = np.empty(doc.size, dtype=np.int32)
+            for start in range(0, doc.size, chunk):
+                n = min(chunk, doc.size - start)
+                a = shim.decode(doc[start:start + n], start_pos=start,
+                                feat_ptr=store.row_ptr(start_row + n_rows + start),
+                                want_logits=True)
+                argmax[start:start + n] = a
+                n_sub += 1
+
+            store.write_tails(start_row + n_rows, doc[1:], argmax[1:])
+            if in_set is not None:
+                am = argmax[1:]
+                label_hits += int(in_set[am].sum())
+                label_checked += int(am.size)
+
+            chunks.append([start_row + n_rows, int(take)])
+            n_rows += int(take)
+            n_chunks += 1
+        per_source[name] = n_rows - before
+        if n_rows >= max_tokens:
+            break
+
+    return {
+        "n_tokens": n_rows,
+        "n_docs": n_docs,
+        "n_chunks": n_chunks,
+        "n_sub_batches": n_sub,
+        "chunks": chunks,
+        "per_source": per_source,
+        "label_coverage": (label_hits / label_checked) if label_checked else None,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True, help="where to write the shard report JSON")
     ap.add_argument("--layers", default="2,18,33")
     ap.add_argument("--chunk", type=int, default=2048)
+    ap.add_argument("--n-ctx", type=int, default=0,
+                    help="contiguous mode: context length; 0 = one independent chunk of chunk+1")
     ap.add_argument("--max-tokens", type=int, default=32768)
     ap.add_argument("--capacity-gib", type=float, default=2.0)
     ap.add_argument("--n-gpu-layers", type=int, default=99)
@@ -139,6 +213,7 @@ def main() -> int:
     ap.add_argument("--coig", action="append")
     ap.add_argument("--firefly", action="append")
     ap.add_argument("--wiki", action="append")
+    ap.add_argument("--nlp", action="append", help="generated NLP JSONL (prompt + response)")
     ap.add_argument("--code", action="append", help="directory to mine for code")
     ap.add_argument("--chars-per-source", type=int, default=20_000_000)
     ap.add_argument("--skip-chars", type=int, default=0)
@@ -152,11 +227,11 @@ def main() -> int:
     if not sources:
         sys.exit("no input sources given")
 
-    n_ctx = args.chunk + 1
+    n_ctx = args.n_ctx if args.n_ctx > 0 else args.chunk + 1
     capacity = int(args.capacity_gib * 2**30)
 
     t0 = time.time()
-    shim = Shim(args.model, n_gpu_layers=args.n_gpu_layers, n_ctx=n_ctx, n_batch=n_ctx)
+    shim = Shim(args.model, n_gpu_layers=args.n_gpu_layers, n_ctx=n_ctx, n_batch=args.chunk)
     shim.set_layers(layers)
     store = FeatureStore(capacity, len(layers), shim.n_embd)
     store.require(args.max_tokens + 1)
@@ -172,8 +247,13 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     t1 = time.time()
-    report = extract_into(shim, store, sources, chunk=args.chunk,
-                          max_tokens=args.max_tokens, in_set=in_set)
+    if args.n_ctx > 0:
+        report = extract_contiguous_into(shim, store, sources, n_ctx=n_ctx,
+                                         chunk=args.chunk, max_tokens=args.max_tokens,
+                                         in_set=in_set)
+    else:
+        report = extract_into(shim, store, sources, chunk=args.chunk,
+                              max_tokens=args.max_tokens, in_set=in_set)
     extract_s = time.time() - t1
     store.flush()
 
@@ -185,6 +265,8 @@ def main() -> int:
         "n_layer_feat": len(layers),
         "row_bytes": store.row_bytes,
         "chunk": args.chunk,
+        "n_ctx": n_ctx,
+        "contiguous": bool(args.n_ctx),
         "capacity_gib": args.capacity_gib,
         "load_s": round(load_s, 1),
         "extract_s": round(extract_s, 1),

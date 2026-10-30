@@ -12,7 +12,7 @@ import json
 import pathlib
 
 __all__ = ["iter_coig_cqia", "iter_firefly", "iter_wikipedia", "iter_text_files",
-           "iter_code_dirs", "CODE_SUFFIXES"]
+           "iter_code_dirs", "iter_nlp_docs", "CODE_SUFFIXES"]
 
 
 CODE_SUFFIXES = {".py", ".c", ".cc", ".cpp", ".h", ".hpp", ".rs", ".sh",
@@ -118,3 +118,32 @@ def iter_code_dirs(dirs, budget_chars: int, skip_chars: int = 0,
             emitted += len(text)
             if emitted >= budget_chars:
                 return
+
+
+def iter_nlp_docs(paths, budget_chars: int, skip_chars: int = 0):
+    """Generated NLP records: one document per `prompt + response` pair.
+
+    The prompt is the rendered chat template (system + user + assistant
+    prefix); the response is the target's own continuation. Training on the
+    whole document teaches the draft the prompt distribution as well as the
+    thinking/answer register.
+    """
+    consumed = 0
+    emitted = 0
+    for path in paths:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                text = (rec.get("prompt") or "") + (rec.get("response") or "")
+                if not text:
+                    continue
+                consumed += len(text)
+                if consumed <= skip_chars:
+                    continue
+                yield text
+                emitted += len(text)
+                if emitted >= budget_chars:
+                    return

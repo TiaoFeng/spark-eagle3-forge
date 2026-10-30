@@ -757,6 +757,63 @@ work is bilingual. The next structural step was a 48K vocabulary that keeps the
 
 ---
 
+## 11. S2b: the NLP mixture and the contiguous extractor
+
+### 11a. Why
+
+D1/D2 settled two things: the head is the binding constraint (it converts
+about a third of the target's top-1 ceiling), and the 48K vocabulary removes
+the English coverage cap. S2b therefore trains on the target's own output for
+the actual workload instead of the public Chinese corpora.
+
+### 11b. Data generation
+
+`scripts/gen_nlp_data.py` starts a draft-free llama-server with four slots and
+writes one JSONL record per request:
+
+| task | jobs | prompt | effort |
+|---|---:|---|---|
+| sum | 600 | Chinese/English wiki article, 200-character summary | high 2/3, low 1/3 |
+| trans | 1200 | wiki article, Chinese <-> English | high 2/3, low 1/3 |
+| org | 400 | wiki article -> outline / table / JSON | high 2/3, low 1/3 |
+| chat | 1200 | COIG-CQIA instruction | high |
+| long | 120 | 24k-character document -> integrated summary / outline | high 2/3, low 1/3 |
+
+The document is the rendered chat prompt plus the target's continuation, so
+training sees the prompt distribution and the thinking/answer register. The
+`long` records are the long-context shards (~30% of the token budget). The
+generator is resumable and writes `datasets/nlp/*.jsonl`.
+
+### 11c. Training
+
+`scripts/train_s2b.py` differs from `train.py` in two places:
+
+- **contiguous extraction**: `extract_contiguous_into()` decodes each document
+  in 2048-token sub-batches without resetting the KV cache, up to a 16k
+  context, so a feature at a response position sees the whole document prefix.
+  The old `extract_into()` resets the KV per 2048-token chunk.
+- **mixed-token TTT**: at each position the second pass feeds the draft's own
+  argmax with probability `mix_rate` and the target token otherwise, matching
+  the runtime's accept/reject, instead of a lagged self-fed chain.
+
+The segment plan is 4 x 1M tokens, weights sum 0.20 / trans 0.20 / org 0.15 /
+chat 0.15 / long 0.30, starting from `head_init_48k.pt`; 2000 steps of
+2 x 1024 tokens, lr 1e-4 cosine with a 200-step warmup.
+
+### 11d. Smoke
+
+A 20k-token, 20-step run on a 1% generated sample:
+
+- extraction 2,299 tok/s, 0.3 GiB resident;
+- label coverage (48K vocabulary): chat 0.948, long 0.991;
+- training 20 steps in 2.2 s, no failures;
+- `s2b.pt` loads and the 48K logits are produced.
+
+The full generation and training run is in progress; the measured p0 will be
+recorded here when it finishes.
+
+---
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
@@ -781,9 +838,9 @@ about a third of the target's top-1 ceiling, temperature and probabilistic draft
 nothing, and the 48K bilingual vocabulary lifts held-out coverage from 0.939 to 0.971 overall
 (0.684 to 0.960 on English text). The next stage:
 
-1. **S2b (register)**: ~4M tokens, summarisation 30% / translation 25% / organisation 20% /
-   chat 20%, long-context shards 30% of tokens, TTT token mixing, using
-   `d2t_v2_48k.i32` and `head_init_48k.pt`. A recipe check, not the final run.
+1. **S2b (register)**: the generator and contiguous trainer are in place; the full run is in
+   progress on `d2t_v2_48k.i32` and `head_init_48k.pt` (summarisation 30% / translation 25% /
+   organisation 20% / chat 20%, long-context shards 30%). A recipe check, not the final run.
 2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture and a last-mile pass on the daily
    mix; D1 is the gate.
 

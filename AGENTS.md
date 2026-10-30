@@ -38,6 +38,11 @@ D2 built that vocabulary: 32K base + 16K English, warm-started from S2a. On held
 lifts coverage 0.939 → 0.971 overall and 0.684 → 0.960 on English text, and the 48K head loads in
 llama.cpp. S2b/S3 use `d2t_v2_48k.i32` and `head_init_48k.pt`; see `docs/notes.md` §10.
 
+S2b is in progress: `scripts/gen_nlp_data.py` generates the target's own NLP output
+(summary / translation / organisation / chat plus long-context shards) and
+`scripts/train_s2b.py` trains the 48K head with contiguous features and mixed-token TTT.
+See `docs/notes.md` §11.
+
 ## 1. Hard constraints (non-negotiable)
 
 Every approach must satisfy all of these:
@@ -161,6 +166,8 @@ spark-eagle3-forge/
 │   ├── d0_report.py           # D0: aggregate the matrix into tables
 │   ├── record_steps.py        # record greedy steps for vocabulary scoring
 │   ├── build_union_vocab.py   # 48K union: keep the base ids, append English ids
+│   ├── gen_nlp_data.py        # generate the S2b NLP corpus with the target
+│   ├── train_s2b.py           # S2b: contiguous features + mixed-token TTT
 │   ├── check_public.sh        # leak check (also installed as a pre-commit hook)
 │   └── install_hooks.sh       # install that hook locally
 ├── configs/                   # reserved for stage configs; currently empty
@@ -295,6 +302,14 @@ csrc/build/sp_feat_cli --model "$MODELS_DIR/<target>.gguf" \
     --base datasets/vocab/d2t_v1_32k.i32 --out datasets/vocab/d2t_v2_48k
 .venv/bin/python scripts/init_head.py --from-checkpoint checkpoints/s2a.pt \
     --d2t datasets/vocab/d2t_v2_48k.i32 --out checkpoints/head_init_48k.pt
+
+# S2b: generate the NLP corpus, then train the 48K head
+.venv/bin/python scripts/gen_nlp_data.py \
+    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+    --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp
+.venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
+    --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/head_init_48k.pt \
+    --out checkpoints/s2b --steps 2000 --segments 4
 ```
 
 ### What "verified" means here
@@ -394,7 +409,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
 | **D1** | NLP register matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
-| S2b | NLP mixture + long-context shards, 48K head (4M recipe check) | open |
+| S2b | NLP mixture + long-context shards, 48K head (4M recipe check) | 🚧 generator/trainer in place, full run in progress |
 | S3 | Scale to 12–16M tokens with the S2b mixture | final head |
 
 ### S2a, as it ran
