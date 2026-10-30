@@ -34,6 +34,10 @@ D1 measured the NLP mix (translation, summarisation, organisation, chat): overal
 summarisation (0.277–0.333). The English-heavy registers are coverage-capped at 0.81–0.89, so a
 48K bilingual vocabulary is the next step; see `docs/notes.md` §9.
 
+D2 built that vocabulary: 32K base + 16K English, warm-started from S2a. On held-out steps it
+lifts coverage 0.939 → 0.971 overall and 0.684 → 0.960 on English text, and the 48K head loads in
+llama.cpp. S2b/S3 use `d2t_v2_48k.i32` and `head_init_48k.pt`; see `docs/notes.md` §10.
+
 ## 1. Hard constraints (non-negotiable)
 
 Every approach must satisfy all of these:
@@ -155,6 +159,8 @@ spark-eagle3-forge/
 │   ├── g1_online.py           # online p0 through llama-server
 │   ├── d0_matrix.py           # D0: temperature × sampling × register acceptance
 │   ├── d0_report.py           # D0: aggregate the matrix into tables
+│   ├── record_steps.py        # record greedy steps for vocabulary scoring
+│   ├── build_union_vocab.py   # 48K union: keep the base ids, append English ids
 │   ├── check_public.sh        # leak check (also installed as a pre-commit hook)
 │   └── install_hooks.sh       # install that hook locally
 ├── configs/                   # reserved for stage configs; currently empty
@@ -281,6 +287,14 @@ csrc/build/sp_feat_cli --model "$MODELS_DIR/<target>.gguf" \
 .venv/bin/python scripts/d0_report.py --requests logs/d0_requests.jsonl \
     --out-md logs/d0_report.md --out-json logs/d0_report.json
 # D1: same commands with --set nlp, --prompt-dir datasets/prompts/nlp, --temps 1.0
+
+# D2: 48K union vocabulary and the S2a warm start
+.venv/bin/python scripts/record_steps.py --model "$MODELS_DIR/<target>.gguf" \
+    --prompt-dir datasets/prompts/nlp --out logs/nlp/steps.i32
+.venv/bin/python scripts/build_union_vocab.py --model "$MODELS_DIR/<target>.gguf" \
+    --base datasets/vocab/d2t_v1_32k.i32 --out datasets/vocab/d2t_v2_48k
+.venv/bin/python scripts/init_head.py --from-checkpoint checkpoints/s2a.pt \
+    --d2t datasets/vocab/d2t_v2_48k.i32 --out checkpoints/head_init_48k.pt
 ```
 
 ### What "verified" means here
@@ -379,7 +393,8 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **S2a** | 8M unique tokens (public corpora) + 8k steps + G3/G3b/G3c | ✅ G4 missed by 0.002 |
 | **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
 | **D1** | NLP register matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
-| S2b | NLP mixture + long-context shards (4M recipe check) | open |
+| **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
+| S2b | NLP mixture + long-context shards, 48K head (4M recipe check) | open |
 | S3 | Scale to 12–16M tokens with the S2b mixture | final head |
 
 ### S2a, as it ran

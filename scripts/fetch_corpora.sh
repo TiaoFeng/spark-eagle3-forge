@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fetch the Chinese corpora used for draft-vocabulary frequency selection.
-# Everything lands in datasets/raw/ which is gitignored.
+# Fetch the Chinese and English corpora used for draft-vocabulary frequency
+# selection. Everything lands in datasets/raw/ which is gitignored.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-mkdir -p datasets/raw/coig_cqia datasets/raw/wikipedia_zh datasets/raw/firefly
+mkdir -p datasets/raw/coig_cqia datasets/raw/wikipedia_zh datasets/raw/firefly \
+         datasets/raw/wikipedia_en
 LOG=logs/download.log
 : > "$LOG"
 
@@ -22,6 +23,9 @@ fetch "https://huggingface.co/datasets/m-a-p/COIG-CQIA/resolve/main/COIG-CQIA-fu
 
 fetch "https://huggingface.co/datasets/wikimedia/wikipedia/resolve/main/20231101.zh/train-00000-of-00006.parquet" \
       "datasets/raw/wikipedia_zh/train-00000-of-00006.parquet"
+
+fetch "https://huggingface.co/datasets/wikimedia/wikipedia/resolve/main/20231101.en/train-00000-of-00041.parquet" \
+      "datasets/raw/wikipedia_en/train-00000-of-00041.parquet"
 
 fetch "https://huggingface.co/datasets/YeungNLP/firefly-train-1.1M/resolve/main/firefly-train-1.1M.jsonl" \
       "datasets/raw/firefly/firefly-train-1.1M.jsonl"

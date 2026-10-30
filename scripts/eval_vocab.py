@@ -31,7 +31,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("steps")
     ap.add_argument("vocabs", nargs="+")
+    ap.add_argument("--labels", default="",
+                    help="comma-separated probe labels; defaults to the eight realistic prompts")
     args = ap.parse_args()
+    labels = args.labels.split(",") if args.labels else PROBES
 
     steps = np.fromfile(args.steps, dtype=np.int32).reshape(-1, 4)
     pidx, tok, arg, cjk = (steps[:, i] for i in range(4))
@@ -51,7 +54,7 @@ def main() -> int:
     print()
     print(header)
 
-    for i, probe in enumerate(PROBES):
+    for i, probe in enumerate(labels):
         m = pidx == i
         if not m.any():
             continue

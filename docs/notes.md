@@ -706,6 +706,57 @@ still adds no accepted tokens.
 
 ---
 
+## 10. D2: the 48K bilingual union vocabulary
+
+### 10a. Why
+
+D1 measured 0.81-0.89 coverage on both translation directions, English ->
+Chinese summary and long context: the 32K vocabulary is 84.8% CJK while the daily
+work is bilingual. The next structural step was a 48K vocabulary that keeps the
+32K Chinese ids and adds English ones.
+
+### 10b. Method
+
+- Record greedy steps for the 48 NLP prompts (`scripts/record_steps.py`), in the
+  same `[register, token, argmax, cjk]` layout `eval_vocab.py` consumes.
+- Build the union (`scripts/build_union_vocab.py`): keep the 32,000 base ids in
+  their original order, append the 16,000 most frequent missing target ids from
+  one English Wikipedia shard (20M chars) plus the recorded steps at weight 50.
+  Keeping the base order is what lets the S2a lm_head rows survive.
+- Warm start from `checkpoints/s2a.pt`, not v8 (`scripts/init_head.py
+  --from-checkpoint`): copy the 32,000 trained rows and random-initialise the
+  16,000 new rows at 0.5x the old row std.
+- Export and load the head to confirm the runtime accepts a 48K draft vocabulary
+  (llama.cpp takes the size from `d2t.ne[0]`).
+
+### 10c. Results
+
+- union: 48,000 ids, 27,134 CJK base + 32 CJK new; the 16,000 new rows are
+  almost entirely English/ASCII.
+- in-sample (the steps used for selection): coverage 1.000. This is expected and
+  is not evidence of generalisation.
+- held-out realistic workload (`logs/real/steps.i32`, 2,002 steps from different
+  prompts): 0.9386 -> 0.9710 overall; ASCII 0.9000 -> 0.9594; CJK 0.9741 ->
+  0.9818; `zh_tech` 0.7969 -> 0.9492.
+- held-out English Wikipedia slice (2M chars after the selection window, 508,553
+  tokens): 0.6835 -> 0.9604.
+- warm start: 32,000 rows kept from S2a, 16,000 new; 259.2M parameters.
+- 48K GGUF: 500 MB, 14 tensors, `d2t` exact; llama-server loads it and reports
+  draft acceptance. The smoke p0 is unchanged because the Chinese argmax stays
+  inside the preserved 32K rows.
+
+### 10d. Decision
+
+- S2b/S3 use `datasets/vocab/d2t_v2_48k.i32` and
+  `checkpoints/head_init_48k.pt`. The English rows are new and must be trained;
+  the S2b mixture (summarisation 30% / translation 25% / organisation 20% /
+  chat 20%) supplies the English data.
+- The 48K vocabulary removes the 0.81-0.89 coverage cap measured in D1; the
+  remaining gap is head quality, as in D0/D1.
+- Keep the D1 matrix as the gate: re-run it with the 48K head after S2b.
+
+---
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
@@ -725,16 +776,15 @@ still adds no accepted tokens.
 
 ## Next step
 
-D0 (§8) and D1 (§9) settle the measurement questions: the head converts about a third of the
-target's top-1 ceiling, temperature and probabilistic drafting change nothing, and the NLP
-workload is strongest on translation/organisation and weakest on summarisation. The next stage:
+D0 (§8), D1 (§9) and D2 (§10) settle the measurement and vocabulary questions: the head converts
+about a third of the target's top-1 ceiling, temperature and probabilistic drafting change
+nothing, and the 48K bilingual vocabulary lifts held-out coverage from 0.939 to 0.971 overall
+(0.684 to 0.960 on English text). The next stage:
 
-1. **D2 (vocabulary)**: 48K union build, warm start from `checkpoints/s2a.pt`, and score the
-   candidate on the D1 steps with `eval_vocab.py` before any training.
-2. **S2b (register)**: ~4M tokens, summarisation 30% / translation 25% / organisation 20% /
-   chat 20%, long-context shards 30% of tokens, TTT token mixing. A recipe check, not the final
-   run.
-3. **S3 (scale)**: 12-16M unique tokens with the S2b mixture and a last-mile pass on the daily
+1. **S2b (register)**: ~4M tokens, summarisation 30% / translation 25% / organisation 20% /
+   chat 20%, long-context shards 30% of tokens, TTT token mixing, using
+   `d2t_v2_48k.i32` and `head_init_48k.pt`. A recipe check, not the final run.
+2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture and a last-mile pass on the daily
    mix; D1 is the gate.
 
 Probabilistic drafting and the sampling temperature are not training levers at present; they stay
