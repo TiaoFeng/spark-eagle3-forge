@@ -238,11 +238,12 @@ All original textual content is licensed under the GNU Free Documentation Licens
 ```
 The current <https://dumps.wikimedia.org/legal.html> page states GFDL plus CC BY-SA 4.0 for original text;
 both the dataset card and that page are recorded for reference. Only text dumps were used. The corpora
-were read to count token frequencies and to extract hidden-state features, so no article text is
-redistributed in this repository.
+were read to count token frequencies, to extract hidden-state features, and to serve as prompts for the
+target-generated training corpus, so no article text is redistributed in this repository.
 
 COIG-CQIA and firefly-train-1.1M carry no explicit licence on their cards. They were used for the same
-two purposes only. If you redistribute derived weights commercially, assess those terms yourself.
+purposes, except that COIG-CQIA additionally supplies the chat prompts for that generated corpus. If you
+redistribute derived weights commercially, assess those terms yourself.
 
 ## Inference Framework
 - Framework: ggml-org/llama.cpp

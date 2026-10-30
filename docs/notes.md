@@ -26,7 +26,8 @@ accepts; it is hardware independent, so it compares across machines. Noise is ab
 Three immediately useful conclusions:
 
 - On the same prompts, **dropping temp 1.0 → 0.7 almost doubles `chat_think` p0** (0.171 → 0.328)
-  → lowering the temperature is a free speed-up.
+  → lowering the temperature is a free speed-up for v8 (§8d later shows this does not hold for the
+  retrained head).
 - Prose without thinking (0.013) is far below the 0.12 break-even → enabling speculative decoding
   there is **slower**.
 - `n-max` 2 and 3 are worse on every workload; `--spec-draft-p-min` 0.3/0.6/0.8 does nothing.
@@ -62,7 +63,8 @@ Supporting confirmation:
 
 ### 2. Hard ceiling: the draft vocabulary is 32K and holds almost no Chinese
 
-The EAGLE-3 head has 32000 output dimensions and the verifier only ever sees those candidates:
+The EAGLE-3 head has 32000 output dimensions (v8 and S2a; S2b widens it to 48000) and the verifier
+only ever sees those candidates:
 
 $$p_0 \le \text{coverage} \equiv \Pr\big[\text{target argmax} \in \text{draft vocab}\big]$$
 
@@ -348,7 +350,7 @@ Chinese thinking prompts of §2b). Offline and greedy, so the numbers are hardwa
 | **mean of 8** | **0.1480** | **0.3590** |
 
 Note that the single `chat_think` prompt measures 0.2461 at `--n-gen 256` and 0.2891 at
-`--n-gen 128`: the scorer samples a different set of positions, and the spread (0.043) is larger than
+`--n-gen 128`: the scorer scores a different set of positions, and the spread (0.043) is larger than
 the ±0.03 noise quoted elsewhere. `--n-gen 256` is the standard here because it scores twice as many
 positions.
 
@@ -426,10 +428,10 @@ Four prompts, protocol P (`--n-gen 256`, greedy), the same checkpoints the run s
 
 Two things to read out of it:
 
-- **Almost all of the gain arrives by step 500.** `chat_think` jumps 0.246 → 0.324 within one
-  segment, then sits inside the ±0.03 noise band for the remaining 7500 steps. The 27,757
-  re-initialised `lm_head` rows are the whole story: once they have seen a few hundred steps of
-  their own language, the head can use them.
+- **For three of the four probes, almost all of the gain arrives by step 500.** `chat_think` jumps
+  0.246 → 0.324 within one segment, then sits inside the ±0.03 noise band for the remaining 7500
+  steps. The 27,757 re-initialised `lm_head` rows are the whole story: once they have seen a few
+  hundred steps of their own language, the head can use them.
 - **Only `zh_daily` keeps climbing** (0.16 → 0.29), which is the most purely Chinese workload of the
   four. Workloads that already worked (code, `zh_tech`, English-ish thinking) do not improve further.
 
@@ -529,9 +531,10 @@ offline scorer counting every position while llama.cpp counts verification steps
 
 ### 8a. Why the gate number and the daily number differed
 
-`scripts/g1_online.py` sends `temperature = 0.0`, so every S2a gate reports
-greedy acceptance. A real session samples. D0 measures the same prompts under
-three server configurations:
+The S2a gates are scored offline by `eval_p0.py`, which replays greedily
+(protocol P), and `scripts/g1_online.py` sends `temperature = 0.0` as well. A
+real session samples. D0 measures a separate 46-prompt daily set under three
+server configurations:
 
 | Mode | Server | What it measures |
 |---|---|---|
@@ -612,13 +615,14 @@ ring buffer) to 0.67 (`daily_struct_04`, a Markdown table).
    top-1 is 0.75 (code), 0.77 (technical Q&A) and 0.82 (long context), against
    0.96-0.98 for Chinese chat. The rebuilt 32K vocabulary is 84.8% CJK, so it
    is the mirror image of v8: Chinese is covered, code and technical ASCII are
-   not. That is a hard ceiling for those workloads, independent of training.
+   only partly covered (0.75-0.77). That is a hard ceiling for those workloads,
+   independent of training.
 
 ### 8e. Decision for the next stage
 
-- S2b/S3 are justified and should be weighted toward the free-form Chinese
-  workloads, which sit at 0.31-0.34 (technical Q&A, code, chat); structured
-  output is already the strongest workload (0.46).
+- S2b/S3 are justified and should be weighted toward the free-form workloads,
+  which sit at 0.31-0.34 (technical Q&A, code, chat); structured output is
+  already the strongest workload (0.46).
 - Before S3, rebuild the draft vocabulary at 48K-64K with a code/ASCII quota if
   code and technical text are a large share of daily tokens; code coverage is
   0.75 and technical Q&A 0.77, so those workloads are capped regardless of the
@@ -779,7 +783,8 @@ writes one JSONL record per request:
 | long | 120 | 24k-character document -> integrated summary / outline | high 2/3, low 1/3 |
 
 The document is the rendered chat prompt plus the target's continuation, so
-training sees the prompt distribution and the thinking/answer channels. The
+training sees the prompt distribution and the thinking channel (every generation
+hit its budget inside thinking; the answer channel is never reached, §11g). The
 `long` records are the long-context shards (~30% of the token budget). The
 generator is resumable and writes `datasets/nlp/*.jsonl`.
 
@@ -795,9 +800,14 @@ generator is resumable and writes `datasets/nlp/*.jsonl`.
   argmax with probability `mix_rate` and the target token otherwise, matching
   the runtime's accept/reject, instead of a lagged self-fed chain.
 
-The segment plan is 4 x 1M tokens, weights sum 0.20 / trans 0.20 / org 0.15 /
-chat 0.15 / long 0.30, starting from `head_init_48k.pt`; 2000 steps of
-2 x 1024 tokens, lr 1e-4 cosine with a 200-step warmup.
+The segment plan is 4 x 1M tokens, task weights: sum=0.20, trans=0.20,
+org=0.15, chat=0.15, long=0.30 (long = long-context shards), starting from
+`head_init_48k.pt`; 2000 steps of 2 x 1024 tokens, lr 1e-4 cosine with a
+200-step warmup. The §9e plan listed summarisation 30% / translation 25% /
+organisation 20% / chat 20% / other 5% with long-context shards at 30% of
+tokens; the run expresses the long-context share as a 0.30 task weight and
+splits the remaining 0.70 as 20/20/15/15, dropping `other` — a recipe change,
+recorded here like the ones in §7a.
 
 ### 11d. Smoke
 
@@ -834,8 +844,10 @@ A 20k-token, 20-step run on a 1% generated sample:
 Coverage with the 48K vocabulary is 0.979-0.995, against 0.81-0.98 with 32K.
 The head converts 0.529 of the target's top-1 probability, up from 0.396. The
 estimated speed-up `(1 + 0.460) / 1.12` is **1.30x** on this mix, against 1.20x
-for S2a. The plan's gate (mean >= 0.40, every workload >= 0.35, coverage >=
-0.90) passes.
+for S2a. Against the §9e gates, the acceptance checks pass: mean 0.460 >= 0.40,
+English -> Chinese 0.480 >= 0.40, English -> Chinese summary 0.424 >= 0.35, and
+coverage 0.979-0.995 >= 0.90 on every workload. The online wall-clock gate
+(>= 1.3x) has not been measured (§11g).
 
 This comparison changes both the head and the vocabulary, so the +0.116 is the
 combined effect. D2's coverage table separates the ceiling from the head: the
@@ -846,8 +858,8 @@ in-domain data added.
 
 - every generated response hit the `n_predict` budget, so the documents are the
   target's thinking channel and never reach the answer after the thinking
-  channel closes. The D1 prompts score the first 128 tokens, which is the same
-  workload, so the gate is aligned; the answer phase is untrained. S3 should add
+  channel closes. The D1 prompts score the first 128 tokens, the same thinking
+  segment, so the gate is aligned; the answer phase is untrained. S3 should add
   no-thinking or longer-budget samples.
 - the chat gain is the smallest (+0.028). The chat documents sit near the
   1024-token window, and many are skipped by `WindowSampler`.
@@ -860,29 +872,30 @@ in-domain data added.
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
    both translation directions, English -> Chinese summary and long context. The 48K union
-   rebuild (keep the 32K ids, append 16K English ids, warm-start from S2a) is scheduled before
-   S2b; the code/ASCII quota is no longer the target.
+   rebuild (keep the 32K ids, append 16K English ids, warm-start from S2a) was built in §10
+   and used for S2b; the code/ASCII quota is no longer the target.
 2. **Feature precision bf16 vs F32**: v8's weights are F32, bf16 is purely a capacity trade
    (2.79M vs 1.4M tokens). Train two short runs on the same data and compare p0.
 3. **Contiguous KV within a chunk**: keeping it is closer to live long-context behaviour, but the
    nine full-attention layers slow down with depth; resetting per chunk truncates the first 512
    tokens of context.
 4. **How much of the remaining gap is data volume?** 2.05 epochs per segment is still repetition;
-   §7c shows the gain saturating by step 500, so the next marginal step is *more unique tokens*
-   (S3, 12–16M) rather than more steps.
+   §7c shows the gain saturating by step 500 for three of four probes (`zh_daily` excepted), so
+   the next marginal step is *more unique tokens* (S3, 12–16M) rather than more steps.
 5. **`lambda` for the training-time test**: 0.5 was a guess (§7a). A/B it now that the pipeline is
    cheap: two 2000-step runs with 0 and 1.0 would bracket the useful range.
 
 ## Next step
 
-D0 (§8), D1 (§9) and D2 (§10) settle the measurement and vocabulary questions: the head converts
-about a third of the target's top-1 ceiling, temperature and probabilistic drafting change
-nothing, and the 48K bilingual vocabulary lifts held-out coverage from 0.939 to 0.971 overall
-(0.684 to 0.960 on English text). The next stage:
+D0 (§8), D1 (§9) and D2 (§10) settle the measurement and vocabulary questions: at the S2a stage
+the head converts about a third of the target's top-1 ceiling (S2b raises it to 0.529),
+temperature and probabilistic drafting change nothing, and the 48K bilingual vocabulary lifts
+held-out-step coverage from 0.939 to 0.971 overall (ASCII 0.900 to 0.959) plus a held-out English
+Wikipedia slice from 0.684 to 0.960. The next stage:
 
-1. **S2b (workload)**: done (§11). 3.46M generated tokens, D1 mean 0.344 -> 0.460, every
-   workload up. The answer phase remains untrained because the generated responses stop
-   inside the thinking channel.
+1. **S2b (workload)**: done (§11). 3.46M training tokens from ~4.78M generated tokens, D1 mean
+   0.344 -> 0.460, every workload up. The answer phase remains untrained because the generated
+   responses stop inside the thinking channel.
 2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, a no-thinking / answer slice, and
    a last-mile pass on the daily mix; D1 is the gate.
 

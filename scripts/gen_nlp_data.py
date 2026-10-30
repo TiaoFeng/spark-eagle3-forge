@@ -110,8 +110,9 @@ def build_jobs(scale: float, seed: int) -> list[dict]:
                      "task": task, "source": source, "text": text, "effort": effort})
 
     for i in range(n_sum):
-        # mostly the deployment `high` effort; a third `low` so some responses
-        # reach the answer channel instead of stopping inside the thinking
+        # mostly the deployment `high` effort; a third `low`, intended to let
+        # some responses reach the answer channel — in practice all of them
+        # stopped inside thinking (docs/notes.md §11g)
         effort = "high" if i % 3 else "low"
         if i % 2 == 0 and zh_articles:
             add("sum", "zh_wiki", "请用 200 字左右总结下面的中文材料，保留关键数字与结论。\n\n"

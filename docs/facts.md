@@ -13,7 +13,8 @@ and what llama.cpp needs. All of it is portable; none of it needs to be worked o
 spark2_5: block 36 / hidden 2560 / ffn 10240 / heads 16 / kv_heads 4 / head_dim 256
           sliding_window 512, 3:1 → 27 sliding layers + 9 full layers
           rope.base 5e6 (global rotation on only 64 dims), rope_freq_base_swa 1e4
-          tied embedding (the GGUF has no output.weight) / vocab 131072 / ctx 1048576
+          tied embedding (the GGUF has no output.weight) / vocab 131072 / ctx 1048576 (model maximum;
+          deployment keeps 131072 and must not shrink it)
 GGUF: 290 tensors = 2 + 36×8; attn_qkv is fused as [2560, 6144]
 ```
 
@@ -26,7 +27,7 @@ portable constraints that follow:
 
 | Constraint | Consequence |
 |---|---|
-| VRAM ≤ 12 GiB | the target (~8 GiB) and the head in training state (~4 GiB) **cannot be resident together** → two stages |
+| VRAM ≤ 12 GiB | the target (~6 GiB during extraction, ~8 GiB near full context) and the head in training state (~4 GiB) **cannot be resident together** — the desktop and CUDA context push the total past 12 GiB → two stages |
 | tmpfs defaults to 50% of RAM | the feature buffer **must not** rely on `/dev/shm` |
 | often no swap | overcommit goes straight to the OOM killer (no clean error) → check capacity up front |
 | CUDA often not on PATH | builds must be told where `nvcc` is |
@@ -46,8 +47,8 @@ $$\text{speed-up} = \frac{1+p_0}{1.12} \qquad \text{break-even } p_0 \approx 0.1
 Verified conclusions about the inference parameters:
 
 - **`n-max` is always 1**: 2 and 3 are worse on every workload
-- `--spec-draft-p-min` 0.3/0.6/0.8 does nothing (it drags chat-without-thinking back up while
-  eating the thinking gain)
+- `--spec-draft-p-min` 0.3/0.6/0.8 has no net benefit (it drags chat-without-thinking back up
+  while eating the thinking gain)
 - `probabilistic` vs `greedy` is within noise; **greedy is the default**, probabilistic is only a
   control at temp 1.0
 - the `draft-eagle3` draft **always takes an argmax** (`common/speculative.cpp:869`)
@@ -57,8 +58,9 @@ Verified conclusions about the inference parameters:
 
 ### 2.3 The hard ceiling on p0: a 32K draft vocabulary
 
-The head emits 32000 values; the runtime scatters them back into the 131072 target vocabulary with
-`d2t` and everything else is `-INFINITY`. Therefore
+The head emits one value per draft-vocabulary id (32000 for v8/S2a, 48000 for S2b); the runtime
+scatters them back into the 131072 target vocabulary with `d2t` and everything else is
+`-INFINITY`. Therefore
 
 $$p_0 \le \text{coverage} \equiv \Pr[\text{target argmax} \in \text{draft vocab}]$$
 
@@ -71,8 +73,9 @@ Those same steps use only 722 distinct tokens, so **32K is ample; the problem is
 picked**. A rebuilt 32K vocabulary (84.8% of its ids contain CJK) lifts coverage **0.245 → 0.939**.
 
 Measured afterwards (`notes.md` §7d): the head trained on that vocabulary reaches p0 **0.3159** on
-the same eight prompts, i.e. it converts about a third of its enlarged ceiling, not the 40% that v8
-managed. Coverage is a necessary condition, not a promise.
+the same eight prompts. On protocol P its coverage is 0.882, so it converts ≈ 0.36 of that ceiling
+(0.3159 / 0.882), against v8's ≈ 0.41 (0.1480 / 0.3590). Coverage is a
+necessary condition, not a promise.
 
 `d2t`'s `ne[0]` sets the draft vocabulary size (`src/models/eagle3.cpp:47`), so changing it **needs
 no runtime change**, but the rows of `lm_head` change meaning → no warm start for those rows, they

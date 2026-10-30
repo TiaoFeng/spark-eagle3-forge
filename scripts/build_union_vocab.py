@@ -180,7 +180,7 @@ def main() -> int:
                         "token_coverage": float(mask[steps[sel, 1]].mean()),
                         "argmax_coverage": float(mask[steps[sel, 2]].mean()),
                     }
-            meta["per_register"] = per
+            meta["per_workload"] = per
 
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(json.dumps(meta, indent=2), flush=True)
