@@ -1169,37 +1169,41 @@ Three things follow:
 3. **16k is fixed, 32k is not** (+0.094 and +0.031). The joined 29k-token documents taught the 16k
    regime; at 32k the head is still at 0.250.
 
-### 14f. Wall clock, and why long context does not pay
+### 14f. Wall clock: decode wins everywhere, prefill pays once
 
-Online A/B, 48 D1 prompts, temp 1.0, Q8_0 head, the same server with and without `-md`, wall clock
-including prefill:
+Online A/B, temp 1.0, Q8_0 head, the same server with and without `-md`. Each request is split into
+decode (`n_predicted / predicted_per_second`) and the remainder, which is prompt processing:
 
-| workload | speed-up |
-|---|---:|
-| chat | 1.06x |
-| translation, summary, organisation (short context) | 1.17-1.30x |
-| **short-context mean** | **1.19x** |
-| long context (13-14k prompts) | **0.92x** |
-| all 48 prompts | 1.11x |
+| workload (prompt length) | decode | prefill | wall clock |
+|---|---:|---:|---:|
+| chat (85-136) | 1.15x | +0.6 s over 6 requests | 1.06x |
+| translation / summary / organisation (0.5-4k) | 1.21-1.35x | +0.1-0.5 s over 6 | 1.17-1.30x |
+| long context, 128-token replies (13-14k) | **1.20x** | +3.6 s over 6 | 0.92x |
+| long context, 512-token replies (13-14k) | **1.20x** | +3.5 s over 6 | **1.06x** |
 
-- The short-context workloads land near the cost model; chat is the weakest (1.06x) because its p0
-  is still the lowest.
-- **Long context is slower with the head.** The verification overhead is not a constant: at 13-14k
-  the extra verified token reads the whole KV, so $f$ grows well past 0.08 and the break-even p0
-  rises with it. S3 reaches 0.419 there, which is not enough. The same effect explains why the
-  all-48 average (1.11x) sits below the short-context mean: six long requests take a quarter of the
-  wall time.
-- Online acceptance (0.495) matches the offline replay (0.502) to 0.007, so the export and the
-  replay agree, as G1 requires.
-- Against the §9e gate (`NLP mix mean p0 >= 0.40`, `online wall clock >= 1.3x`): acceptance passes,
-  wall clock does not. 1.3x needs p0 around 0.55 at this cost structure.
+- **Decode is 1.15-1.35x faster at every length measured, including 13-14k.** The head never slows
+  decoding; p0 0.42 at that length is enough to beat the draft pass.
+- The cost is prefill: with `-md` the draft also processes the prompt, so prompt handling is ~28%
+  slower at 14k (+0.6 s per request) and ~20-30% slower at short lengths (+0.05-0.1 s).
+- That is a fixed per-request cost, so it amortises over the reply. At 14k the break-even is about
+  280 generated tokens: a 128-token reply loses 8%, a 512-token reply wins 6%. At short context the
+  break-even is a few dozen tokens.
+- The first reading of this table said "long context is slower" and it was wrong: the 128-token
+  benchmark spent 57% of its wall time in prefill. The same six prompts at 512 tokens flip the sign.
+
+Against the §9e gate (`NLP mix mean p0 >= 0.40`, `online wall clock >= 1.3x`): acceptance passes
+(0.495). The 1.3x wall-clock gate is missed on 128-token replies (1.19x short-context mean, 1.11x
+over all 48); it is a reply-length artefact as much as a head result.
 
 ### 14g. What to do with it
 
-- Ship S3 for short-context NLP work: +0.045 p0, +0.076 in the answer channel, ~1.19x.
-- Do not enable the head for long documents yet; it costs about 8%. Either raise p0 there or leave
-  speculation off for those sessions.
-- The next levers, in order: more answer and short-document data (the slice that worked), then a
+- **Ship S3 and leave it on.** There is no context-length switch worth building: decode improves at
+  every length, and the prefill overhead pays back after roughly 300 generated tokens at 14k and
+  after a few dozen at short context.
+- The only regime that can lose is a very long prompt with a very short reply (a question over a
+  30k-token document answered in 100 tokens). If that pattern matters, the fix is cheaper prompt
+  handling in the draft, not a toggle: llama.cpp currently runs the draft over the prompt.
+- The remaining levers, in order: more answer and short-document data (the slice that worked), then a
   two-step recipe only if p1 clears 0.31, then KD for probabilistic drafting.
 
 ## Open questions
@@ -1230,10 +1234,10 @@ including prefill:
    joined 29k-token documents lift 16k from 0.281 to 0.375 but 32k only from 0.219 to 0.250, so part
    of the drop was the training window and part is not. The cost side matters more: at 13-14k the
    verification overhead grows and the head is a net 0.92x (§14f).
-9. **How does the per-pass overhead scale with context?** (§14f) `f = 0.08` was measured at short
-   context. The long-context A/B says it grows enough to flip the sign at 13-14k with p0 0.42. An
-   A/B at 4k / 8k / 16k / 32k would turn break-even into a curve instead of a constant, which is
-   what a context-aware deployment rule needs.
+9. **What exactly does the draft do during prefill?** (§14f) With `-md`, prompt processing is ~28%
+   slower at 14k and ~20-30% at short lengths, while decode is untouched. That is consistent with the
+   draft encoder/decoder running over the prompt instead of only at the boundary, which would be a
+   llama.cpp optimisation rather than a head problem.
 
 ## Next step
 

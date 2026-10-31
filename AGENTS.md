@@ -35,8 +35,10 @@ answer channel measures 0.385 against 0.493 in thinking, and p0 falls from 0.484
 
 S3 (`docs/notes.md` §14) is trained and measured: 7.77M rows, p0 0.457 → **0.502** offline (0.495
 online), the answer channel 0.385 → **0.462**, 16k context 0.281 → **0.375**, 32k only 0.219 →
-0.250. Short-context NLP work runs **1.19x** faster; 13-14k documents run **0.92x**, because the
-verification overhead grows with context. The 1.3x wall-clock gate is therefore not met.
+0.250. Short-context NLP work runs **1.19x** faster, and decode is **1.20-1.35x** faster at every
+length measured, including 13-14k. The head's only cost is prefill: with `-md` the draft also
+processes the prompt, ~28% slower at 14k, which pays back after ~300 generated tokens (0.92x at
+128-token replies, 1.06x at 512). The 1.3x wall-clock gate is not met on 128-token replies.
 
 ## 1. Hard constraints (non-negotiable)
 
@@ -398,7 +400,7 @@ G0–G3c pass (evidence: `docs/notes.md` §§3, 5c, 7); the gates are:
 | **G4 ship (S2a)** | `chat_think` p0 ≥ **0.33** (→ 1.19x) | ❌ **0.3281**, short by 0.002 |
 | **S2b wall clock** | NLP mix online ≥ **1.3x** | ⏳ not measured (`docs/notes.md` §11g) |
 | **S3 acceptance** | NLP mix mean p0 ≥ **0.40** (§9e) | ✅ 0.495 online, 0.502 offline |
-| **S3 wall clock** | NLP mix online ≥ **1.3x** (§9e) | ❌ 1.19x short context, 1.11x all, 0.92x at 13-14k |
+| **S3 wall clock** | NLP mix online ≥ **1.3x** (§9e) | ❌ 1.19x short context, 1.11x all (128-token replies); decode 1.20-1.35x, prefill is the cost |
 
 G4 is recorded as **missed on S2a**: the threshold was fixed in advance and the S2a head reaches 1.186x, not
 1.19x. The realistic mean (0.3159 offline, eight prompts) and the five-prompt online A/B (0.1481 →
