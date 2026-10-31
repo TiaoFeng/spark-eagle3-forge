@@ -868,6 +868,92 @@ in-domain data added.
 
 ---
 
+## 12. Quantising the draft head (Q8_0)
+
+### 12a. Why it is legal at all
+
+llama.cpp builds the eagle3 draft with generic `create_tensor()` + `build_lora_mm()`
+(`src/models/eagle3.cpp`), so any GGML type loads; the only type assertion in that file is that
+`d2t` stays **I64**. bf16 was our exporter's choice (`--dtype bf16`), not a runtime requirement.
+The quantiser is arch-agnostic (`src/llama-quant.cpp` has no `case LLM_ARCH_*`), so
+`llama quantize` processes an eagle3 GGUF unmodified. There is no Q8_K_M or Q8_K_L: the K family
+ends at `Q6_K`, and 8-bit has exactly one variant, `Q8_0`.
+
+### 12b. Measurement
+
+48 NLP prompts (the D1 set), `--n-gen 128`, temp 1.0, ctx 32768, `n-max 1`, greedy draft, the
+same target. "no head" is the same server without `-md`, and every figure below is relative to it
+(absolute throughput belongs in `AGENTS.local.md`).
+
+| draft head | file on disk | accept | mean len | vs no head |
+|---|---:|---:|---:|---:|
+| none | — | — | 1.000 | 1.00x |
+| bf16 | 500.0 MiB | 0.4598 | 1.470 | 1.166x |
+| **Q8_0** | 268.2 MiB | 0.4595 | 1.469 | **1.217x** |
+| Q4_K_M | 182.2 MiB | 0.4616 | 1.46 (derived) | 1.227x |
+
+The 48-prompt set contains all 14 prompts of the subset used for the rest of this section, and on
+that subset Q6_K came in +0.9% and Q5_K_M +1.0% above Q8_0 (Q4_K_M: +1.6% there, +0.8% over the
+48). **The acceptance is indistinguishable across all five** (0.430-0.462, i.e. inside the ±0.03
+noise); an 8-bit draft preserves the argmax, and below that the returns are under 1%.
+
+### 12c. Why the gain is smaller than the byte ratio
+
+The first version of the cost model charged only the draft weights:
+
+$$S=\frac{1+p_0}{1+d},\quad d\approx B_{\text{head}}/B_{\text{target}}$$
+
+That predicts 1.27x for bf16 and 1.35x for Q8_0, both too high. Dividing each measured decode rate
+by the no-head rate makes a pass cost $1+f+d$, and the measurements land at 1.266x (bf16), 1.195x
+(Q8_0) and 1.311x (Q8_0, n-max 2). The model therefore needs a **fixed per-pass overhead**
+$f\approx0.08$ — the verification batch carries one extra token, plus the sampler chain and the
+draft's boundary decode — on top of the draft pass:
+
+$$S=\frac{1+p_0}{1+f+d},\qquad f\approx0.08,\quad d_{bf16}\approx0.186,\ d_{q8}\approx0.116,\ d_{q4}\approx0.098$$
+
+which reproduces every measured speed-up above to within about 1% (e.g. the 48-prompt Q8_0 row:
+$1.46/1.196 = 1.220$ against 1.217 measured). Because $f$ dominates at 8 bits and below,
+further quantisation cannot buy much: Q8_0 → Q4_K_M cuts the draft file by another third
+(268 → 182 MiB) but moves $d$ by only 0.018, against 0.070 for bf16 → Q8_0.
+
+### 12d. Two draft tokens, measured
+
+`n-max 2` was measured on the same head (`p_min 0`) and loses on both sets (speed relative to the
+no-head server):
+
+| set | n-max 1 | n-max 2 | change |
+|---|---:|---:|---:|
+| 14 mixed prompts | 1.208x | 1.147x | −5.1% |
+| 6 long-context prompts (10-14k) | 1.180x | 1.124x | −4.7% |
+
+Deriving the second-position acceptance from the `mean len` difference,
+
+$$p_1=\frac{\text{mean len}_{n_2}-\text{mean len}_{n_1}}{p_0}$$
+
+gives **p1 = 0.14** on the mixed set (p0 0.433, p1/p0 = 0.31) and **p1 = 0.11** on the long-context
+set (p0 0.393). Cross-check: the n-max 2 acceptance should be $(p_0+p_0p_1)/2$, i.e. 0.247, and the
+server reports 0.246.
+
+Break-even is $p_0p_1>d$: with $d_{q8}=0.116$ the second token needs **p1 > 0.25**, so the current
+head is short by more than 2x. This is the arithmetic behind the loss recipes of §7a and §11c: the
+training-time test never feeds the head its own prenorm hidden, while at runtime the second draft
+step consumes `(own argmax, own prenorm)`, and no recipe so far has trained that pair.
+
+### 12e. `p_min` is counter-productive
+
+`n-max 2` with `--spec-draft-p-min 0.5` gives the **highest** `mean len` of any configuration (1.692)
+and the **lowest** throughput of the three n-max 2 runs. The gate is applied to every draft token
+including the first (`common/speculative.cpp`), so a pass that is cut short pays the whole draft
+pass and returns nothing; the earlier "p_min 0.3/0.6/0.8 has no net benefit" result has the same
+cause.
+
+### 12f. Decision
+
+Q8_0 ships: same argmax, 46% smaller draft file, +4.4% decode, no C++ change.
+`scripts/quantize_head.sh <ckpt> <out.gguf>` reproduces it (export bf16 → `llama quantize` →
+verify that the tensor set is unchanged, the vectors kept their type, and `d2t` is byte-identical).
+`n-max` stays 1 until a two-step-trained head lifts p1 above 0.25.
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on

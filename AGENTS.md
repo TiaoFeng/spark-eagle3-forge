@@ -86,6 +86,7 @@ Derivations and measurements live in [`docs/facts.md`](docs/facts.md). Index onl
 | Second loss term | Training-time test (feed the draft its own output) | The author measured p0 0.50 → 0.70 |
 | Feature precision | bf16 (llama.cpp gives F32; round-to-nearest-even before storing) | Doubles capacity. **v8's weights are F32**, so bf16 is our trade-off, not an inheritance; the evaluator must round the same way |
 | Feature storage | **memfd + mmap** | Pure RAM, no tmpfs quota, no NVMe writes, no root |
+| Draft head precision | **Q8_0** (`scripts/quantize_head.sh`; bf16 kept for A/B) | Same argmax as bf16 over 6144 NLP tokens, and 46% smaller draft file → +4.4% decode. The loader takes any GGML type; only `d2t` must stay I64 (`docs/notes.md` §12) |
 | Starting point | v8 warm start, **`lm_head` retrained** | Only 4,243 of 32,000 rows overlap; the rest are re-initialised |
 | Segmentation | extract → train → checkpoint immediately, per segment | Features live in RAM; a dead process loses them |
 
@@ -281,6 +282,9 @@ csrc/build/sp_feat_cli --model "$MODELS_DIR/<target>.gguf" \
 .venv/bin/python -m spark_eagle3.export_gguf --ckpt checkpoints/s2a.pt \
     --out "$MODELS_DIR/spark-eagle3-s2a.gguf" \
     --tokenizer-from "$MODELS_DIR/spark-eagle3-v8.gguf"
+
+# Stage 3b: quantise the draft head (Q8_0 = same argmax, +4.4% decode; notes §12)
+scripts/quantize_head.sh checkpoints/s2b.pt "$MODELS_DIR/spark-eagle3-s2b-q8.gguf"
 
 # Stage 3: online p0 (llama-server's draft acceptance is p0)
 .venv/bin/python scripts/g1_online.py \
