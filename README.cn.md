@@ -74,7 +74,7 @@ flowchart LR
 
 ## 快速开始
 
-发布文件是 `spark-eagle3-s2b-48k.gguf`，48K `d2t` 已嵌在 GGUF 里。`datasets/`、`checkpoints/`、`logs/` 都在 `.gitignore`，全新克隆需要先生成。完整命令见 [`AGENTS.md`](AGENTS.md) §6，简短版：
+发布文件是 `spark-eagle3-s2b-48k.gguf`，48K `d2t` 已嵌在 GGUF 里。`datasets/`、`checkpoints/`、`logs/` 都在 `.gitignore`，全新克隆需要先生成。常规流程见 [`AGENTS.md`](AGENTS.md) §6，简短版：
 
 ```bash
 export LLAMACPP_ROOT=…   # 带 spark2_5 layer-input 补丁的 llama.cpp

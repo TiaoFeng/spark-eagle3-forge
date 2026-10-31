@@ -8,6 +8,11 @@ the model.
 
 Usage:
     python scripts/make_prompts.py --model M.gguf --out-dir datasets/prompts/rendered
+    python scripts/make_prompts.py --model M.gguf --out-dir datasets/prompts/rendered --set realistic
+    python scripts/make_prompts.py --model M.gguf --out-dir datasets/prompts/nlp --set nlp
+
+NOTE: --set defaults to synthetic (six invented workloads, no zh_tech). Pass --set
+explicitly: realistic for the Chinese thinking probes, nlp for the D1 matrix.
 """
 
 from __future__ import annotations

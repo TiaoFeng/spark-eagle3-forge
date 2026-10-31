@@ -32,6 +32,18 @@ portable constraints that follow:
 | often no swap | overcommit goes straight to the OOM killer (no clean error) → check capacity up front |
 | CUDA often not on PATH | builds must be told where `nvcc` is |
 
+Training memory (32K head, 218.2M parameters; 48K head is 259.2M and lifts the fixed
+overhead to ~10.6 GiB):
+
+| Item | Size |
+|---|---:|
+| head fp32 parameters + gradients | 1.75 GB |
+| AdamW moments | 1.75 GB |
+| target `token_embd` (bf16) | 671 MB |
+| Python + torch + CUDA host | ~2.5 GB |
+| pinned staging / fragmentation headroom | ~3.5 GB |
+| **Fixed overhead** | **~10 GiB** |
+
 ---
 
 ### 2.2 Cost model (the core formula)

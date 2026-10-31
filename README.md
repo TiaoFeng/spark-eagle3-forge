@@ -74,7 +74,7 @@ Features come from the **quantised Q6_K GGUF that llama.cpp serves**, are writte
 
 ## Quick start
 
-The released head is `spark-eagle3-s2b-48k.gguf`; its 48K `d2t` is embedded in the GGUF. `datasets/`, `checkpoints/` and `logs/` are gitignored, so a fresh clone has to generate them first. All commands are in [`AGENTS.md`](AGENTS.md) §6; the short version:
+The released head is `spark-eagle3-s2b-48k.gguf`; its 48K `d2t` is embedded in the GGUF. `datasets/`, `checkpoints/` and `logs/` are gitignored, so a fresh clone has to generate them first. The regular cycle is in [`AGENTS.md`](AGENTS.md) §6; the short version:
 
 ```bash
 export LLAMACPP_ROOT=…   # llama.cpp with the spark2_5 layer-input patch
