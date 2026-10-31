@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S2b: train the 48K head on the generated NLP mixture.
+"""Train the 48K draft head on the generated NLP mixture (S2b, and S3 with flags).
 
 Differences from `train.py` (the S2a driver):
 
@@ -10,14 +10,33 @@ Differences from `train.py` (the S2a driver):
   * the training-time test mixes the target token and the draft's own argmax
     per position (the runtime's accept/reject), instead of a lagged chain.
 
+S3 adds two options rather than a second driver:
+
+  * `--answer-dir` / `--answer-weights` mix in a thinking-off corpus from
+    `gen_nlp_data.py --think-off`. S2b only ever saw the thinking channel
+    (`docs/notes.md` §11g) and P0 measured the answer phase 0.11 lower (§13e).
+  * `--short-seq-len` / `--short-mix` sample from a second window pool built
+    from the documents the long pool drops, because a chunk shorter than
+    `seq_len + 1` rows used to contribute nothing at all — which is exactly the
+    shape of an answer document.
+
 Everything else (feature format, memfd store, parking the head during
 extraction, checkpoint format) is shared with `train.py`.
 
-Usage:
+Usage (S2b):
   python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
       --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/head_init_48k.pt \
       --out checkpoints/s2b --steps 2000 --segments 4 --tokens-per-segment 1000000 \
       --seq-len 1024 --batch-seqs 2 --n-ctx 16384 --chunk 2048
+
+Usage (S3, warm start from S2b):
+  python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
+      --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/s2b.pt \
+      --out checkpoints/s3 --steps 6000 --segments 6 --tokens-per-segment 2500000 \
+      --weights sum=0.17,trans=0.17,org=0.13,chat=0.13,long=0.25 \
+      --answer-dir datasets/nlp_answer \
+      --answer-weights sum=0.05,trans=0.05,org=0.03,chat=0.02 \
+      --short-seq-len 256 --short-mix 0.25 --n-ctx 32768
 """
 
 from __future__ import annotations
@@ -41,7 +60,7 @@ from spark_eagle3.feats import FeatureStore, row_bytes  # noqa: E402
 from spark_eagle3.llamacpp import Shim  # noqa: E402
 from spark_eagle3.train import (  # noqa: E402
     IGNORE, WindowSampler, build_model, load_init, load_vocabulary, lr_at,
-    park, save_checkpoint, target_embeddings, to_bf16, unpark,
+    park, save_checkpoint, split_window_pools, target_embeddings, to_bf16, unpark,
 )
 
 TASKS = ("sum", "trans", "org", "chat", "long")
@@ -59,20 +78,36 @@ def plan_segment(args, segment: int):
     weights = parse_weights(args.weights)
     data_dir = pathlib.Path(args.data_dir)
     plan = []
-    for task in TASKS:
-        path = data_dir / ("%s.jsonl" % task)
-        if not path.exists() or task not in weights:
-            continue
-        quota = int(args.tokens_per_segment * weights[task])
+
+    def add(name: str, path: pathlib.Path, weight: float) -> None:
+        if weight <= 0:
+            return
+        quota = int(args.tokens_per_segment * weight)
         if quota <= 0:
-            continue
+            return
+        if not path.exists():
+            raise SystemExit("missing %s (task %s)" % (path, name))
         chars = int(quota * args.chars_per_token)
         ns = types.SimpleNamespace(
             text=None, code=None, coig=None, firefly=None, wiki=None,
             nlp=[str(path)], chars_per_source=chars,
             skip_chars=segment * chars,
         )
-        plan.append((task, quota, build_sources(ns)))
+        plan.append((name, quota, build_sources(ns)))
+
+    for task in TASKS:
+        if task in weights:
+            add(task, data_dir / ("%s.jsonl" % task), weights[task])
+
+    # Answer-channel slice (S3): the same tasks rendered with thinking disabled,
+    # so the head finally sees the phase it has never been trained on (P0 §13e
+    # measured 0.385 there against 0.493 in thinking). Logged with an `a_` prefix.
+    if args.answer_dir:
+        ans_weights = parse_weights(args.answer_weights) if args.answer_weights else {}
+        ans_dir = pathlib.Path(args.answer_dir)
+        for task in TASKS:
+            if task in ans_weights:
+                add("a_" + task, ans_dir / ("%s.jsonl" % task), ans_weights[task])
     return plan
 
 
@@ -140,6 +175,16 @@ def main() -> int:
     ap.add_argument("--out", default="checkpoints/s2b")
     ap.add_argument("--data-dir", default="datasets/nlp")
     ap.add_argument("--weights", default="sum=0.20,trans=0.20,org=0.15,chat=0.15,long=0.30")
+    ap.add_argument("--answer-dir", default="",
+                    help="thinking-off corpus from gen_nlp_data.py --think-off")
+    ap.add_argument("--answer-weights", default="",
+                    help="e.g. sum=0.12,trans=0.10,org=0.08,chat=0.08")
+    ap.add_argument("--short-seq-len", type=int, default=0,
+                    help="second window length for documents the long pool drops")
+    ap.add_argument("--short-mix", type=float, default=0.0,
+                    help="fraction of steps drawn from the short pool")
+    ap.add_argument("--short-batch-seqs", type=int, default=8,
+                    help="sequences per short step, so tokens/step stay comparable")
     ap.add_argument("--chars-per-token", type=float, default=3.0)
 
     ap.add_argument("--layers", default="2,18,33")
@@ -253,9 +298,19 @@ def main() -> int:
             train_chunks = [c for i, c in enumerate(chunks) if i % args.val_chunk_every != 0]
         else:
             val_chunks, train_chunks = [], chunks
-        sampler = WindowSampler(train_chunks, args.seq_len)
+        sampler, short_sampler = split_window_pools(train_chunks, args.seq_len,
+                                                    args.short_seq_len)
         if len(sampler) == 0:
-            raise SystemExit("no window fits --seq-len %d" % args.seq_len)
+            if short_sampler is None or len(short_sampler) == 0:
+                raise SystemExit("no window fits --seq-len %d" % args.seq_len)
+            print("segment %d: no long windows; promoting the short pool" % segment,
+                  flush=True)
+            sampler, short_sampler = short_sampler, None
+        elif short_sampler is not None and len(short_sampler) == 0:
+            short_sampler = None
+        print("segment %d: %d long windows, %d short windows"
+              % (segment, len(sampler),
+                 len(short_sampler) if short_sampler is not None else 0), flush=True)
         val_sampler = WindowSampler(val_chunks, args.seq_len) if val_chunks else None
         val_starts = (val_sampler.sample(np.random.default_rng(args.seed + 7919),
                                          args.val_batches)
@@ -265,11 +320,17 @@ def main() -> int:
         model.train()
         running: dict[str, float] = {}
         n_run = 0
+        tokens_seen = 0
         t_log = time.time()
         seg_end = min((segment + 1) * steps_per_segment, args.steps)
 
         while global_step < seg_end:
-            idx = sampler.sample(rng, args.batch_seqs)
+            use_short = (short_sampler is not None and args.short_mix > 0.0
+                         and float(rng.random()) < args.short_mix)
+            pool = short_sampler if use_short else sampler
+            step_len = args.short_seq_len if use_short else args.seq_len
+            step_batch = args.short_batch_seqs if use_short else args.batch_seqs
+            idx = pool.sample(rng, step_batch)
             feats = store.feature_view()[idx]
             tok = store.token_view()[idx]
             lab = store.argmax_view()[idx]
@@ -290,13 +351,15 @@ def main() -> int:
 
             for key, value in stats.items():
                 running[key] = running.get(key, 0.0) + value
+            running["short"] = running.get("short", 0.0) + (1.0 if use_short else 0.0)
             running["grad_norm"] = running.get("grad_norm", 0.0) + float(grad_norm)
             n_run += 1
+            tokens_seen += step_batch * step_len
 
             if global_step % args.log_every == 0 or global_step == seg_end:
                 mean = {k: v / n_run for k, v in running.items()}
                 mean.update({"step": global_step, "segment": segment,
-                             "lr": lr, "tokens_seen": global_step * args.batch_seqs * args.seq_len})
+                             "lr": lr, "tokens_seen": tokens_seen})
                 if val_starts is not None and (global_step % args.log_every == 0):
                     mean["val"] = evaluate(model, emb, d2t_t, t2d_t, store,
                                            val_starts, args.lambda_ttt, args.mix_rate)
@@ -310,17 +373,23 @@ def main() -> int:
                 t_log = time.time()
 
             if args.ckpt_every > 0 and global_step % args.ckpt_every == 0:
-                save_checkpoint(out.parent / ("s2b_step%06d.pt" % global_step),
+                save_checkpoint(out.parent / ("%s_step%06d.pt" % (out.stem, global_step)),
                                 model, cfg_json, d2t, step=global_step, segment=segment)
 
-        save_checkpoint(out.parent / "s2b_resume.pt", model, cfg_json, d2t,
+        # checkpoint names follow --out, so `--out checkpoints/s3` never touches
+        # the S2b head: s2b.pt / s2b_resume.pt / s2b_step*.pt keep their old
+        # names because the documented S2b command still uses `--out checkpoints/s2b`
+        save_checkpoint(out.parent / (out.stem + "_resume.pt"), model, cfg_json, d2t,
                         step=global_step, segment=segment + 1, optimizer=opt)
-        save_checkpoint(out.parent / "s2b.pt", model, cfg_json, d2t,
+        save_checkpoint(out.with_suffix(".pt"), model, cfg_json, d2t,
                         step=global_step, segment=segment + 1, extra={
                             "mix_rate": args.mix_rate,
                             "lambda_ttt": args.lambda_ttt,
                             "segments": args.segments,
                             "tokens_per_segment": args.tokens_per_segment,
+                            "answer_weights": args.answer_weights,
+                            "short_seq_len": args.short_seq_len,
+                            "short_mix": args.short_mix,
                         })
         store.close()
 

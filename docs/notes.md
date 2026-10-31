@@ -1090,6 +1090,45 @@ One document repeated to the target length, 64 greedy tokens at the end.
    ceiling that no greedy draft can exceed. The head sits at 0.457 with 0.53 of the ceiling, so the
    realistic band is +0.05-0.10 p0, i.e. about 1.25-1.30x.
 
+## 14. S3: the answer slice and short-document windows
+
+### 14a. Why
+
+P0 (§13) left two requirements that S2b's pipeline could not express:
+
+- the answer channel measures 0.385 against 0.493 in thinking (§13e), and S2b has no answer rows
+  (§11g);
+- `WindowSampler` silently dropped every chunk shorter than `seq_len + 1` rows — exactly the length
+  of a short answer document — so even a generated answer corpus would have trained nothing.
+
+Both are pipeline changes, not model changes.
+
+### 14b. What changed
+
+- `gen_nlp_data.py --think-off` renders the template's no-thinking prompt and records
+  `thinking: false`, so the same task pools produce the answer channel.
+- `WindowSampler(chunks, seq_len, min_rows, max_rows)` can restrict which chunks contribute, and
+  `split_window_pools(chunks, long_len, short_len)` returns two **disjoint** pools: long windows from
+  every chunk that fits one, short windows only from the chunks the long pool drops.
+- the driver takes `--answer-dir` / `--answer-weights` (logged with an `a_` prefix) and
+  `--short-seq-len` / `--short-mix` / `--short-batch-seqs`; a short step uses 8 x 256 tokens so the
+  tokens per optimiser step stay at 2,048.
+- checkpoint names follow `--out`. They were hard-coded to `s2b*`, so `--out checkpoints/s3` would
+  have overwritten `checkpoints/s2b.pt`.
+
+### 14c. Smoke
+
+70 answer records at scale 0.02 with `--n-predict 384`; all carry `thinking: false` and the responses
+are the answer channel. Extraction label coverage is 0.983-0.996 on the answer tasks. A 20-step run
+over 25,600 rows reports 4,042 long windows and 6,873 short windows, and the short steps fire at the
+requested rate.
+
+### 14d. What it does not tell us
+
+The smoke proves the plumbing, not a gain. Whether the answer slice moves p0 has to be measured with
+the same D1 matrix plus the `--think-off` probe, on a corpus large enough to matter (S3: 12-16M
+unique rows).
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
@@ -1111,9 +1150,9 @@ One document repeated to the target length, 64 greedy tokens at the end.
    labels / KD are the only route to probabilistic drafting, and the offline `alpha` probe is the
    gate: do not wire the runtime before it clears ~0.62.
 7. **How much answer-channel data, and at what weight?** (§13e) The answer phase measures 0.385
-   against 0.493 in thinking, with summarisation answers weakest. S3 needs to pick a share; the
-   `WindowSampler` currently drops any document shorter than `seq_len + 1` rows, so short answers
-   need the sampler changed first.
+   against 0.493 in thinking, with summarisation answers weakest. The pipeline now exists (§14):
+   `gen_nlp_data.py --think-off` builds the corpus and `--answer-weights` mixes it. What is unknown
+   is the weight, and whether the answer phase moves at all.
 8. **Is the context drop a training cap or genuine feature drift?** (§13f) p0 falls from 0.484 at 2k
    to 0.219 at 32k, and the decline starts inside the 16k extraction window. S3 with 32k shards
    separates the two.

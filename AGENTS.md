@@ -276,6 +276,31 @@ scripts/quantize_head.sh checkpoints/s2b.pt "$MODELS_DIR/spark-eagle3-s2b-q8.ggu
     --n-predict 128 --out logs/g1_online.json --server-log logs/g1_server.log
 ```
 
+### S3 (in progress)
+
+P0 (`docs/notes.md` §13) added two data requirements, and both were pipeline changes rather than
+model changes (`docs/notes.md` §14): the answer channel has no training rows, and documents shorter
+than `seq_len + 1` rows used to be dropped by the window sampler.
+
+```bash
+# answer-channel corpus: the same tasks with thinking disabled, its own directory
+.venv/bin/python scripts/gen_nlp_data.py \
+    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+    --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp_answer \
+    --think-off --n-predict 384 --long-n-predict 640 --parallel 4
+
+# S3: warm start from S2b, answer slice, short-window pool, 32k extraction
+.venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
+    --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/s2b.pt \
+    --out checkpoints/s3 --steps 6000 --segments 6 --tokens-per-segment 2500000 \
+    --weights sum=0.17,trans=0.17,org=0.13,chat=0.13,long=0.25 \
+    --answer-dir datasets/nlp_answer \
+    --answer-weights sum=0.05,trans=0.05,org=0.03,chat=0.02 \
+    --short-seq-len 256 --short-mix 0.25 --n-ctx 32768
+```
+
+Checkpoint names follow `--out`, so this writes `checkpoints/s3.pt` and leaves the S2b head alone.
+
 ### P0 diagnostics (measurement only)
 
 Four offline probes that decide the next stage; all of them replay through the head in PyTorch, so
@@ -409,7 +434,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
 | **S2b** | NLP mixture + long-context shards, 48K head (3.46M training tokens from ~4.78M generated) | ✅ D1 0.344 → 0.460 |
 | **P0** | Four offline probes: alpha, p1, channel, context length | ✅ alpha ≤ 0.411, p1 0.107, answer 0.385, 32k 0.219 |
-| S3 | Scale to 12–16M tokens with the S2b mixture | final head |
+| **S3** | 12–16M tokens with the answer slice and short-document windows | ⏳ pipeline ready (§14), full run pending |
 
 ## 12. Before publishing (read before writing any file)
 

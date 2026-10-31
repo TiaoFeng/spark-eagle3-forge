@@ -177,12 +177,20 @@ class WindowSampler:
     Chunks come from independent decodes, so a window may never cross a chunk
     boundary. The extra row is the training-time-test lookahead: forward 2 reads
     features at rows o+1..o+L.
+
+    ``min_rows`` / ``max_rows`` restrict which chunks may contribute at all. That
+    is what makes a short-document pool possible: the long pool keeps only chunks
+    of at least ``seq_len + 1`` rows and silently drops everything shorter, so a
+    400-token answer document used to contribute nothing to training.
     """
 
-    def __init__(self, chunks, seq_len: int):
-        spans = [n - (seq_len + 1) + 1 for _s, n in chunks]
-        keep = [(s, span) for (s, n), span in zip(chunks, spans) if span > 0]
-        self.seq_len = seq_len
+    def __init__(self, chunks, seq_len: int, min_rows: int | None = None,
+                 max_rows: int | None = None):
+        need = int(seq_len) + 1
+        lo = need if min_rows is None else max(int(min_rows), need)
+        hi = (1 << 62) if max_rows is None else int(max_rows)
+        keep = [(int(s), n - need + 1) for s, n in chunks if lo <= n <= hi]
+        self.seq_len = int(seq_len)
         self.base = np.array([s for s, _ in keep], dtype=np.int64)
         self.span = np.array([span for _, span in keep], dtype=np.int64)
 
@@ -195,6 +203,22 @@ class WindowSampler:
         off = (rng.random(batch) * self.span[pick]).astype(np.int64)
         starts = self.base[pick] + off
         return starts[:, None] + np.arange(self.seq_len + 1, dtype=np.int64)[None, :]
+
+
+def split_window_pools(chunks, long_len: int, short_len: int):
+    """Two disjoint pools: long windows, and short windows for the leftovers.
+
+    Every chunk long enough for a ``long_len`` window feeds the long pool. The
+    short pool only sees the chunks that pool would drop, so no row is trained
+    twice through both, and a 300-900 row answer document still contributes.
+    ``short_len <= 0`` disables the second pool.
+    """
+    long_sampler = WindowSampler(chunks, long_len, min_rows=long_len + 1)
+    short_sampler = None
+    if short_len and short_len > 0:
+        short_sampler = WindowSampler(chunks, short_len, min_rows=short_len + 1,
+                                      max_rows=long_len)
+    return long_sampler, short_sampler
 
 
 def to_bf16(u8: np.ndarray) -> torch.Tensor:

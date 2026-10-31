@@ -13,10 +13,20 @@ the model's chat template, and writes one JSONL record per request:
 
 Runs are resumable: records already present in the output are skipped.
 
+The same script builds the **answer corpus**: pass ``--think-off`` and a shorter
+``--n-predict`` and write to its own directory. Every response is then the final
+answer instead of a thinking trace, which S2b never trained (docs/notes.md §11g)
+and which P0 measured at 0.385 against 0.493 in the thinking channel (§13e).
+
 Usage:
   python scripts/gen_nlp_data.py --server "$LLAMACPP_ROOT/build/bin/llama-server" \
       --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp \
       --scale 1.0 --parallel 4
+
+  # answer channel (thinking disabled), its own directory
+  python scripts/gen_nlp_data.py --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+      --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp_answer \
+      --think-off --n-predict 384 --long-n-predict 640 --parallel 4
 """
 
 from __future__ import annotations
@@ -224,6 +234,8 @@ def main() -> int:
     ap.add_argument("--ctx", type=int, default=65536)
     ap.add_argument("--n-predict", type=int, default=640)
     ap.add_argument("--long-n-predict", type=int, default=896)
+    ap.add_argument("--think-off", action="store_true",
+                    help="render the no-thinking prompt and record the answer channel")
     ap.add_argument("--port", type=int, default=8933)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--startup-timeout", type=float, default=300.0)
@@ -274,7 +286,8 @@ def main() -> int:
         if job["id"] in done:
             return
         prompt = tmpl.render(messages=[{"role": "user", "content": job["text"]}],
-                             add_generation_prompt=True, enable_thinking=True,
+                             add_generation_prompt=True,
+                             enable_thinking=not args.think_off,
                              reasoning_effort=job["effort"])
         n_predict = args.long_n_predict if job["task"] == "long" else args.n_predict
         try:
@@ -294,6 +307,7 @@ def main() -> int:
             "task": job["task"],
             "source": job["source"],
             "effort": job["effort"],
+            "thinking": not args.think_off,
             "prompt": prompt,
             "response": text,
             "n_predict": n_predict,
@@ -328,6 +342,9 @@ def main() -> int:
     manifest = {
         "model": pathlib.Path(args.model).name,
         "scale": args.scale,
+        "thinking": not args.think_off,
+        "n_predict": args.n_predict,
+        "long_n_predict": args.long_n_predict,
         "jobs": len(jobs),
         "done": stats["done"],
         "failed": stats["failed"],
