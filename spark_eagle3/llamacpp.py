@@ -197,11 +197,13 @@ class Shim:
                feat_ptr: int | None = None, want_logits: bool = True) -> np.ndarray:
         """Decode one batch; features (if feat_ptr) are written straight to memory.
 
-        Returns the per-position argmax token ids.
+        Returns the per-position argmax token ids. With ``want_logits=False``
+        the argmax is not computed and the result is all -1, so a prompt chunk
+        that only needs features costs no logits buffer.
         """
         toks = np.ascontiguousarray(tokens, dtype=np.int32)
         n = int(toks.size)
-        argmax = np.empty(n, dtype=np.int32)
+        argmax = np.full(n, -1, dtype=np.int32)
         rc = self._lib.sp_decode(
             self._h,
             toks.ctypes.data_as(C.POINTER(C.c_int32)), n, int(start_pos),
@@ -211,6 +213,17 @@ class Shim:
         if rc != n:
             raise RuntimeError("decode failed: " + self._lib.sp_last_error(self._h).decode())
         return argmax
+
+    def logits(self, i: int = 0) -> np.ndarray:
+        """Copy of the logits row of batch entry ``i`` from the last decode.
+
+        The context allocates ``n_vocab`` floats per batch entry, so only fetch
+        rows that are actually wanted (a full prompt batch is GiB at 128k vocab).
+        """
+        ptr = self._lib.sp_logits(self._h, int(i))
+        if not ptr:
+            raise RuntimeError("logits unavailable; decode(want_logits=True) first")
+        return np.ctypeslib.as_array(ptr, shape=(self.n_vocab,)).copy()
 
     def reset(self) -> None:
         self._lib.sp_reset(self._h)

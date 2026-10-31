@@ -26,6 +26,13 @@ belongs to S2a and missed by 0.002** (`chat_think` 0.3281 vs 0.33). S2b's own ga
 scale to 12–16M tokens with the S2b mixture. Protocol P and all run evidence:
 `docs/notes.md` §6–§11.
 
+P0 (`docs/notes.md` §13) then bounded what is left. The head's distribution overlap is no better
+than its argmax match (0.362 / 0.411 against 0.421), so probabilistic drafting is not a lever until
+the head is trained against a distribution. The runtime's second draft step keeps 0.107 of the
+acceptances against 0.555 with the target's own hidden, capping `n-max 2` at +6.5%. The untrained
+answer channel measures 0.385 against 0.493 in thinking, and p0 falls from 0.484 at 2k context to
+0.219 at 32k. S3 therefore adds an answer-channel slice and 32k shards.
+
 ## 1. Hard constraints (non-negotiable)
 
 Every approach must satisfy all of these:
@@ -130,6 +137,7 @@ spark-eagle3-forge/
 │   ├── extract.py             # stage 1: corpus → memfd shard
 │   ├── model.py               # EAGLE-3 head (v8 parameter names)
 │   ├── eval_p0.py             # offline p0 replay (v8 dir, safetensors or a .pt checkpoint)
+│   ├── diag.py                # P0 replay helpers: sampler, alpha overlap, p1, ctx probe
 │   ├── train.py               # stage 2: extract → train → checkpoint, per segment
 │   └── export_gguf.py         # head → GGUF for llama.cpp's draft-eagle3 loader
 ├── scripts/
@@ -139,6 +147,7 @@ spark-eagle3-forge/
 │   ├── init_head.py           # v8 → warm-start checkpoint aligned to the new vocabulary
 │   ├── make_prompts.py        # render probes with the model's own chat template
 │   ├── g1_online.py           # online p0 through llama-server
+│   ├── p0_diag.py             # P0: alpha overlap, two-step p1, channel and ctx probes
 │   ├── d0_matrix.py           # D0: temperature × sampling × workload acceptance
 │   ├── d0_report.py           # D0: aggregate the matrix into tables
 │   ├── record_steps.py        # record greedy steps for vocabulary scoring
@@ -267,6 +276,43 @@ scripts/quantize_head.sh checkpoints/s2b.pt "$MODELS_DIR/spark-eagle3-s2b-q8.ggu
     --n-predict 128 --out logs/g1_online.json --server-log logs/g1_server.log
 ```
 
+### P0 diagnostics (measurement only)
+
+Four offline probes that decide the next stage; all of them replay through the head in PyTorch, so
+they are hardware independent and comparable with protocol P (`docs/notes.md` §13). Nothing here
+trains.
+
+```bash
+# alpha: distribution overlap sum_x min(p, q) at the deployment sampling law
+.venv/bin/python scripts/p0_diag.py --mode alpha --model "$MODELS_DIR/<target>.gguf" \
+    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
+    --out logs/p0_alpha.json
+
+# p1: the runtime's second draft step, split into the token/hidden variants
+.venv/bin/python scripts/p0_diag.py --mode p1 --model "$MODELS_DIR/<target>.gguf" \
+    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
+    --out logs/p0_p1.json
+
+# channel: p0 by thinking / answer channel; --think-off renders the no-thinking prompt
+.venv/bin/python scripts/p0_diag.py --mode channel --model "$MODELS_DIR/<target>.gguf" \
+    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 900 \
+    --out logs/p0_channel.json
+.venv/bin/python scripts/p0_diag.py --mode channel --think-off \
+    --model "$MODELS_DIR/<target>.gguf" --head checkpoints/s2b.pt \
+    --prompt-dir datasets/prompts/nlp --n-gen 128 --out logs/p0_answer.json
+
+# ctx: p0 as a function of session context length
+.venv/bin/python scripts/p0_diag.py --mode ctx --model "$MODELS_DIR/<target>.gguf" \
+    --head checkpoints/s2b.pt --doc datasets/prompts/nlp/nlp_zh2en_01.txt \
+    --ctx-lens 2048,8192,16384,32768 --n-gen 64 --out logs/p0_ctx.json
+```
+
+`--limit N` runs only the first N prompts (smoke test), `--debug-rows N` dumps the first N rows'
+target support and draft pick, and `--think-off` reuses a rendered prompt while swapping the
+generation tail for the template's answer marker. `alpha` needs one extra note: the draft at row
+`p` consumes `token[p+1]` and predicts the token *after* it, so it is compared against the target
+distribution at row `p+1`, not `p`.
+
 ### What "verified" means here
 
 There is **no test suite, no linter and no formatter** in this repo. Correctness is established by
@@ -362,6 +408,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **D1** | NLP workload matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
 | **S2b** | NLP mixture + long-context shards, 48K head (3.46M training tokens from ~4.78M generated) | ✅ D1 0.344 → 0.460 |
+| **P0** | Four offline probes: alpha, p1, channel, context length | ✅ alpha ≤ 0.411, p1 0.107, answer 0.385, 32k 0.219 |
 | S3 | Scale to 12–16M tokens with the S2b mixture | final head |
 
 ## 12. Before publishing (read before writing any file)

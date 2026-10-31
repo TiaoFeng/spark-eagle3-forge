@@ -954,6 +954,142 @@ Q8_0 ships: same argmax, 46% smaller draft file, +4.4% decode, no C++ change.
 verify that the tensor set is unchanged, the vectors kept their type, and `d2t` is byte-identical).
 `n-max` stays 1 until a two-step-trained head lifts p1 above 0.25.
 
+## 13. P0: four measurements that decide the next stage
+
+### 13a. Why
+
+§12d left two things inferred rather than measured: the second-step acceptance `p1` came out of a
+`mean len` difference, and "probabilistic drafting adds nothing" was an observation without a
+mechanism. §11g and §11c left two more: the answer channel has no training rows, and extraction is
+capped at 16k while deployment keeps 131072.
+
+Four offline probes settle all four (`spark_eagle3/diag.py`, `scripts/p0_diag.py`). Every one of
+them replays through the head in PyTorch, so the numbers are hardware independent and comparable
+with protocol P. None of them trains anything.
+
+### 13b. Protocol
+
+- 48 D1 prompts, `--n-gen 128` unless stated, `--dtype bfloat16`, greedy unless the probe samples.
+- `alpha` samples the target at the deployment law (temp 1.0, `top_p 0.95`, `min_p 0.05`, `top_k`
+  off) and records the retained set at every position. The law is reproduced from the logits:
+  `common/common.h` orders the chain `top_p -> min_p -> temperature`, so at temp 1.0 the retained set
+  is the shortest descending prefix whose cumulative probability reaches `top_p`, intersected with
+  `p >= min_p * p_max` (`src/llama-sampler.cpp`).
+- `p1` follows `src/models/eagle3.cpp`: `fc` lives in the *encoder* graph, so the decoder's second
+  step consumes the head's **prenorm** hidden directly as `g_embd`, with the target tokenizer's
+  embedding of the draft's own argmax. `t_h_nextn` is that prenorm state.
+- One convention is easy to get wrong: the draft at row `p` consumes `token[p+1]` and predicts the
+  token *after* it, so its target distribution is the one recorded at row `p+1`. The first version of
+  the `alpha` probe compared against row `p` and reported a third of the true overlap.
+
+### 13c. alpha: the head has no distribution to offer
+
+6,096 scored positions. "argmax" is the draft's argmax against the target's argmax on the same
+sampled path (the sampled-path analogue of p0).
+
+| workload | argmax | alpha T=1.0 | alpha T=0.5 |
+|---|---:|---:|---:|
+| chat | 0.349 | 0.290 | 0.339 |
+| Chinese -> English | 0.434 | 0.355 | 0.419 |
+| English -> Chinese | 0.420 | 0.359 | 0.411 |
+| Chinese -> Chinese summary | 0.440 | 0.383 | 0.424 |
+| English -> Chinese summary | 0.390 | 0.339 | 0.386 |
+| document organisation | 0.431 | 0.377 | 0.418 |
+| long context | 0.474 | 0.433 | 0.472 |
+| **all** | **0.421** | **0.362** | **0.411** |
+
+1. Sharpening the draft logits to T=0.5 lifts the overlap from 0.362 to 0.411 — i.e. *to the argmax
+   match*. The distribution adds nothing the argmax does not already carry; the head is
+   under-confident (mean top-1 probability about 0.40 against the target's 0.86) rather than
+   informative about the target's alternatives. This is the mechanism behind §8d and §9c.
+2. In the cost model, alpha 0.411 at `n-max 3` gives
+   $(1+0.411+0.169+0.069)/1.428 = 1.15x$, below the greedy 1.22x. **Probabilistic drafting is
+   strictly worse today.** It is also not wired for eagle3 at all: the draft loop always takes
+   `cur_p->data[0].id` and never fills `result_q` (`common/speculative.cpp`), so the flag is a no-op.
+3. 120 t/s needs alpha about 0.62 at `n-max 3`; the gap is ~0.21 of distribution overlap. That is a
+   head trained against the target's *distribution* (soft labels), not against the argmax, and
+   whether it can reach 0.62 is unknown. No later stage assumes it.
+
+### 13d. p1: the second step is 0.107, and the hidden state is the whole reason
+
+6,144 rows, 2,790 of them conditional on the first draft being accepted.
+
+| workload | p0 | p1, runtime | p1, target hidden |
+|---|---:|---:|---:|
+| chat | 0.331 | 0.091 | 0.387 |
+| Chinese -> English | 0.468 | 0.086 | 0.606 |
+| English -> Chinese | 0.491 | 0.098 | 0.611 |
+| Chinese -> Chinese summary | 0.475 | 0.110 | 0.581 |
+| English -> Chinese summary | 0.418 | 0.101 | 0.500 |
+| document organisation | 0.480 | 0.117 | 0.552 |
+| long context | 0.513 | 0.146 | 0.555 |
+| **all** | **0.457** | **0.107** | **0.555** |
+
+- The runtime step keeps 0.107, the same figure §12d derived from `mean len` (0.11-0.14). The
+  replay now reproduces it directly, which also validates the two-step harness.
+- Replacing *only* the hidden state with the target's own takes it to 0.555. Under the conditioning
+  the token is already the true one (acceptance means `a1[p] == argmax[p+1]`), so the four-way
+  token/hidden decomposition collapses to three cells and the whole gap is the hidden state. The
+  current training-time test never feeds the head its own prenorm (§11c), so this is a recipe
+  artefact, not a capacity limit.
+- **The `n-max 2` ceiling is therefore bounded, not open.** A recipe that recovered the entire
+  oracle would give $(1+0.457+0.457\cdot0.555)/1.312 = 1.30x$ against 1.22x for `n-max 1`: +6.5%,
+  in the perfect case. Break-even against `n-max 1` needs p1 >= 0.31, which a realistic 60-70%
+  recovery only reaches once p0 is also above ~0.55.
+- So `n-max 2` is a last-mile bonus worth at most ~+6%. It cannot contribute to 120-140 t/s.
+
+### 13e. channel: the answer phase is untrained and measures 0.385
+
+- Thinking, 900 tokens, 48 prompts: 43,029 scored rows, of which 24 are in the answer channel.
+  **1 of 48 prompts** reaches the answer inside 900 tokens. p0(thinking) = **0.493**.
+- No-thinking render (the template's answer marker replaces the thinking opener), 128 tokens:
+  p0 = **0.385**, i.e. -0.11 against the thinking channel.
+
+| workload | p0, answer only |
+|---|---:|
+| chat | 0.292 |
+| Chinese -> English | 0.448 |
+| English -> Chinese | 0.385 |
+| Chinese -> Chinese summary | 0.298 |
+| English -> Chinese summary | 0.312 |
+| document organisation | 0.439 |
+| long context | 0.470 |
+
+Summarisation answers are the weakest (0.30) and translation answers the strongest (0.45), which is
+the same ordering as the thinking channel — but shifted down by about 0.1. S2b has zero answer rows,
+so the S3 answer slice should be weighted to summarisation and translation answers. This is also the
+number to quote for a thinking-off session, which no earlier gate covered.
+
+### 13f. context drift: p0 halves between 2k and 32k
+
+One document repeated to the target length, 64 greedy tokens at the end.
+
+| context | p0 |
+|---:|---:|
+| 2048 | 0.484 |
+| 8192 | 0.406 |
+| 16384 | 0.281 |
+| 32768 | 0.219 |
+
+- Extraction is capped at `n_ctx 16384` (§11c), so 32k is outside the training distribution; but the
+  decline starts well inside it (8k -> 16k is -0.125), so this is not only an extrapolation artefact.
+- At 0.219 the estimated decode speed-up is 1.02x. On 32k documents the head is currently worth
+  nothing, which matters more for document work than any multi-token change.
+- One caveat: the probe repeats a document, so the continuation is synthetic. The ordering is still
+  usable; the absolute values should not be quoted as a workload result.
+
+### 13g. What this changes
+
+1. **S3 remains the only reliable lever**, and the probes add two requirements: an answer-channel
+   slice (13e) and long-context shards at 32k or more (13f). Neither needs a new model.
+2. **Probabilistic drafting is dead until the head is trained against a distribution** (13c). The
+   runtime patch is small — the ngram implementations in `common/speculative.cpp` already show the
+   pattern — but it must not be built before an offline alpha clears ~0.62.
+3. **`n-max 2` is bounded at +6.5%** (13d). Worth a recipe change only after p0 has moved.
+4. The 120-140 t/s question is answered: it needs alpha >= 0.62, or a p0 near the 0.869 argmax
+   ceiling that no greedy draft can exceed. The head sits at 0.457 with 0.53 of the ceiling, so the
+   realistic band is +0.05-0.10 p0, i.e. about 1.25-1.30x.
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
@@ -970,6 +1106,17 @@ verify that the tensor set is unchanged, the vectors kept their type, and `d2t` 
    the next marginal step is *more unique tokens* (S3, 12–16M) rather than more steps.
 5. **`lambda` for the training-time test**: 0.5 was a guess (§7a). A/B it now that the pipeline is
    cheap: two 2000-step runs with 0 and 1.0 would bracket the useful range.
+6. **Can a distribution-trained head clear alpha 0.62?** (§13c) The current head's overlap is 0.362
+   at the deployment law and 0.411 at its best temperature, i.e. no more than its argmax match. Soft
+   labels / KD are the only route to probabilistic drafting, and the offline `alpha` probe is the
+   gate: do not wire the runtime before it clears ~0.62.
+7. **How much answer-channel data, and at what weight?** (§13e) The answer phase measures 0.385
+   against 0.493 in thinking, with summarisation answers weakest. S3 needs to pick a share; the
+   `WindowSampler` currently drops any document shorter than `seq_len + 1` rows, so short answers
+   need the sampler changed first.
+8. **Is the context drop a training cap or genuine feature drift?** (§13f) p0 falls from 0.484 at 2k
+   to 0.219 at 32k, and the decline starts inside the 16k extraction window. S3 with 32k shards
+   separates the two.
 
 ## Next step
 
@@ -987,3 +1134,15 @@ Wikipedia slice from 0.684 to 0.960. The next stage:
 
 Probabilistic drafting and the sampling temperature are not training levers at present; they stay
 parked until the head is calibrated.
+
+P0 (§13) measured the four questions S2b left open. The head's distribution overlap is 0.362 at the
+deployment law and 0.411 at its best temperature — no more than its argmax match, so probabilistic
+drafting is strictly worse than greedy until the head is trained against a distribution. The
+runtime's second draft step keeps 0.107 of the acceptances against 0.555 with the target's own
+hidden, which bounds `n-max 2` at +6.5% even for a perfect hidden-feedback recipe. The answer
+channel, which S2b never trained, measures 0.385 against 0.493 in the thinking channel, with
+summarisation answers weakest. And p0 falls from 0.484 at 2k context to 0.219 at 32k.
+
+S3 therefore keeps its shape but changes its contents: an answer-channel slice weighted to
+summarisation and translation, and long-context shards at 32k or more. Probabilistic drafting and
+`n-max 2` stay parked behind the numbers P0 now defines.
