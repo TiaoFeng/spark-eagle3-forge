@@ -484,7 +484,7 @@ the gate was fixed before the run and it is recorded as missed.
 
 ### 7e. G2 export, and an online A/B against v8
 
-`spark_eagle3/export_gguf.py` writes `spark-eagle3-s2a.gguf` (422 MB, 14 tensors, bf16 matmuls and
+`spark_eagle3/export_gguf.py` writes `spark-eagle3-s2a.gguf` (422 MiB, 14 tensors, bf16 matmuls and
 F32 norms). The round-trip check compares every tensor against the checkpoint and `d2t` exactly; the
 two conventions it has to reproduce (`d2t` absolute, `attn_q`/`attn_k` rope-permuted) are documented
 in the module. llama.cpp loads it without an assert (`draft acceptance` is printed), so **G2 passes**.
@@ -744,7 +744,7 @@ work is bilingual. The next structural step was a 48K vocabulary that keeps the
 - held-out English Wikipedia slice (2M chars after the selection window, 508,553
   tokens): 0.6835 -> 0.9604.
 - warm start: 32,000 rows kept from S2a, 16,000 new; 259.2M parameters.
-- 48K GGUF: 500 MB, 14 tensors, `d2t` exact; llama-server loads it and reports
+- 48K GGUF: 500 MiB, 14 tensors, `d2t` exact; llama-server loads it and reports
   draft acceptance. The smoke p0 is unchanged because the Chinese argmax stays
   inside the preserved 32K rows.
 
@@ -783,10 +783,13 @@ writes one JSONL record per request:
 | long | 120 | 24k-character document -> integrated summary / outline | high 2/3, low 1/3 |
 
 The document is the rendered chat prompt plus the target's continuation, so
-training sees the prompt distribution and the thinking channel (every generation
-hit its budget inside thinking; the answer channel is never reached, §11g). The
-`long` records are the long-context shards (~30% of the token budget). The
-generator is resumable and writes `datasets/nlp/*.jsonl`.
+training sees the prompt distribution and the thinking channel. The corpus is
+almost entirely thinking: **128 of 3,520 responses** (127 chat, 1 summary) close
+the thinking block inside the 640-token budget and carry a short answer — 43.9 kB
+of 9.5 MB of response text, **0.46%**; no prompt contains the marker, so every
+answer comes from the response (§11g, §13e). The `long` records are the
+long-context shards (~30% of the token budget). The generator is resumable and
+writes `datasets/nlp/*.jsonl`.
 
 ### 11c. Training
 
@@ -797,8 +800,10 @@ generator is resumable and writes `datasets/nlp/*.jsonl`.
   context, so a feature at a response position sees the whole document prefix.
   The old `extract_into()` resets the KV per 2048-token chunk.
 - **mixed-token TTT**: at each position the second pass feeds the draft's own
-  argmax with probability `mix_rate` and the target token otherwise, matching
-  the runtime's accept/reject, instead of a lagged self-fed chain.
+  argmax with probability `mix_rate` and the target token otherwise,
+  approximating the runtime's accept/reject at the token level; the runtime's
+  own-hidden second step is still untrained (§13d). The alternative was a lagged
+  self-fed chain.
 
 The segment plan is 4 x 1M tokens, task weights: sum=0.20, trans=0.20,
 org=0.15, chat=0.15, long=0.30 (long = long-context shards), starting from
@@ -844,10 +849,11 @@ A 20k-token, 20-step run on a 1% generated sample:
 Coverage with the 48K vocabulary is 0.979-0.995, against 0.81-0.98 with 32K.
 The head converts 0.529 of the target's top-1 probability, up from 0.396. The
 estimated speed-up `(1 + 0.460) / 1.12` is **1.30x** on this mix, against 1.20x
-for S2a. Against the §9e gates, the acceptance checks pass: mean 0.460 >= 0.40,
-English -> Chinese 0.480 >= 0.40, English -> Chinese summary 0.424 >= 0.35, and
-coverage 0.979-0.995 >= 0.90 on every workload. The online wall-clock gate
-(>= 1.3x) has not been measured (§11g).
+for S2a — that is the +12% model of §7e. Under §12c's `(1+p0)/(1+f+d)` the same
+p0 is about **1.22x** decode. Against the §9e gates, the acceptance checks pass:
+mean 0.460 >= 0.40, English -> Chinese 0.480 >= 0.40, English -> Chinese summary
+0.424 >= 0.35, and coverage 0.979-0.995 >= 0.90 on every workload. The measured
+end-to-end A/B is **1.09x** (§11g), so the 1.3x wall-clock gate is missed.
 
 This comparison changes both the head and the vocabulary, so the +0.116 is the
 combined effect. D2's coverage table separates the ceiling from the head: the
@@ -856,15 +862,16 @@ in-domain data added.
 
 ### 11g. Caveats
 
-- every generated response hit the `n_predict` budget, so the documents are the
-  target's thinking channel and never reach the answer after the thinking
-  channel closes. The D1 prompts score the first 128 tokens, the same thinking
-  segment, so the gate is aligned; the answer phase is untrained. S3 should add
-  no-thinking or longer-budget samples.
+- the corpus is almost entirely the thinking channel: 128 of 3,520 responses
+  (127 chat, 1 summary) close thinking inside the budget and carry a short
+  answer — 43.9 kB of 9.5 MB of response text, 0.46% (§13e). The D1 prompts
+  score the first 128 tokens, the same thinking segment, so the gate is aligned;
+  the answer phase is effectively untrained, which is what the 0.385 measurement
+  reflects. S3 adds a no-thinking corpus (§14).
 - the chat gain is the smallest (+0.028). The chat documents sit near the
   1024-token window, and many are skipped by `WindowSampler`.
-- a controlled wall-clock A/B (the G1 procedure) has not been run for S2b; the
-  1.30x is the acceptance-based estimate, not a measured decode time.
+- the D1 matrix's baseline and greedy runs (two server configs, 128-token replies) measure **1.09x**
+  for S2b end to end; the 1.30x in §11f was the +12% model's estimate.
 
 ---
 
@@ -881,21 +888,24 @@ ends at `Q6_K`, and 8-bit has exactly one variant, `Q8_0`.
 
 ### 12b. Measurement
 
-48 NLP prompts (the D1 set), `--n-gen 128`, temp 1.0, ctx 32768, `n-max 1`, greedy draft, the
-same target. "no head" is the same server without `-md`, and every figure below is relative to it
-(absolute throughput belongs in `AGENTS.local.md`).
+48 NLP prompts (the D1 set), `--n-gen 128`, temp 1.0, ctx 32768, `n-max 1`, greedy draft, the same
+target. "no head" is the same server without `-md`. Decode is `predicted_ms`; wall clock is the whole
+request, so it includes the draft's prompt processing (§14f). Absolute throughput belongs in
+`AGENTS.local.md`.
 
-| draft head | file on disk | accept | mean len | vs no head |
-|---|---:|---:|---:|---:|
-| none | — | — | 1.000 | 1.00x |
-| bf16 | 500.0 MiB | 0.4598 | 1.470 | 1.166x |
-| **Q8_0** | 268.2 MiB | 0.4595 | 1.469 | **1.217x** |
-| Q4_K_M | 182.2 MiB | 0.4616 | 1.46 (derived) | 1.227x |
+| draft head | file on disk | accept | mean len | decode vs no head | wall clock |
+|---|---:|---:|---:|---:|---:|
+| none | — | — | 1.000 | 1.00x | 1.00x |
+| bf16 | 500.0 MiB | 0.4541 | 1.454 | 1.163x | 1.051x |
+| **Q8_0** | 268.2 MiB | 0.4537 | 1.454 | **1.220x** | **1.094x** |
 
-The 48-prompt set contains all 14 prompts of the subset used for the rest of this section, and on
-that subset Q6_K came in +0.9% and Q5_K_M +1.0% above Q8_0 (Q4_K_M: +1.6% there, +0.8% over the
-48). **The acceptance is indistinguishable across all five** (0.430-0.462, i.e. inside the ±0.03
-noise); an 8-bit draft preserves the argmax, and below that the returns are under 1%.
+Q8_0 keeps the acceptance (0.4537 against 0.4541) and is 4.9% faster in decode and 4.1% in wall clock
+for a 46% smaller file. The D1 matrix (§11f) reads 0.460 on the same head; this run reads 0.454, which
+is inside the ±0.03 noise. Its wall clock also differs from the D1 A/B (§11g, 1.09x): today's bf16 row
+is 1.051x, a 4% run-to-run timing spread on the same file. Q6_K, Q5_K_M and Q4_K_M were compared on
+the 14-prompt subset used for the rest of this section (Q6_K +0.9%, Q5_K_M +1.0%, Q4_K_M +1.6% faster
+in decode than Q8_0 there); **the acceptance is indistinguishable across all five**, and below 8 bits
+the returns are under 1%.
 
 ### 12c. Why the gain is smaller than the byte ratio
 
@@ -903,18 +913,17 @@ The first version of the cost model charged only the draft weights:
 
 $$S=\frac{1+p_0}{1+d},\quad d\approx B_{\text{head}}/B_{\text{target}}$$
 
-That predicts 1.27x for bf16 and 1.35x for Q8_0, both too high. Dividing each measured decode rate
-by the no-head rate makes a pass cost $1+f+d$, and the measurements land at 1.266x (bf16), 1.195x
-(Q8_0) and 1.311x (Q8_0, n-max 2). The model therefore needs a **fixed per-pass overhead**
+That predicts 1.27x for bf16 and 1.35x for Q8_0, both too high. Dividing $(1+p_0)$ by each measured
+speed-up gives a pass cost $1+f+d$: **1.25** for bf16 and **1.19** for Q8_0 (an earlier run gave 1.27
+and 1.20, so this is stable to about 1%). The model therefore needs a **fixed per-pass overhead**
 $f\approx0.08$ — the verification batch carries one extra token, plus the sampler chain and the
 draft's boundary decode — on top of the draft pass:
 
-$$S=\frac{1+p_0}{1+f+d},\qquad f\approx0.08,\quad d_{bf16}\approx0.186,\ d_{q8}\approx0.116,\ d_{q4}\approx0.098$$
+$$S=\frac{1+p_0}{1+f+d},\qquad f\approx0.08,\quad d_{bf16}\approx0.17,\ d_{q8}\approx0.116,\ d_{q4}\approx0.098$$
 
-which reproduces every measured speed-up above to within about 1% (e.g. the 48-prompt Q8_0 row:
-$1.46/1.196 = 1.220$ against 1.217 measured). Because $f$ dominates at 8 bits and below,
-further quantisation cannot buy much: Q8_0 → Q4_K_M cuts the draft file by another third
-(268 → 182 MiB) but moves $d$ by only 0.018, against 0.070 for bf16 → Q8_0.
+which reproduces both rows to within about 1.5%. Because $f$ dominates at 8 bits and below, further
+quantisation cannot buy much: Q8_0 → Q4_K_M cuts the draft file by another third (268 → 182 MiB) but
+moves $d$ by only 0.018, against 0.054 for bf16 → Q8_0.
 
 ### 12d. Two draft tokens, measured
 
@@ -949,7 +958,7 @@ cause.
 
 ### 12f. Decision
 
-Q8_0 ships: same argmax, 46% smaller draft file, +4.4% decode, no C++ change.
+Q8_0 ships: same acceptance, 46% smaller draft file, +4.9% decode, no C++ change.
 `scripts/quantize_head.sh <ckpt> <out.gguf>` reproduces it (export bf16 → `llama quantize` →
 verify that the tensor set is unchanged, the vectors kept their type, and `d2t` is byte-identical).
 `n-max` stays 1 until a two-step-trained head lifts p1 above 0.25.
@@ -981,6 +990,11 @@ with protocol P. None of them trains anything.
 - One convention is easy to get wrong: the draft at row `p` consumes `token[p+1]` and predicts the
   token *after* it, so its target distribution is the one recorded at row `p+1`. The first version of
   the `alpha` probe compared against row `p` and reported a third of the true overlap.
+- The replay feeds only the generated rows. llama.cpp's draft decoder processes every verified token,
+  the prompt included (`process()` in `common/speculative.cpp`), so the offline numbers omit the
+  draft's prompt context and the omission grows with prompt length. That is why one prompt can differ
+  from the server by more than the matrix mean does; S2b and S3 are compared on the same omission, and
+  the online matrix is the runtime number.
 
 ### 13c. alpha: the head has no distribution to offer
 
@@ -1003,12 +1017,14 @@ sampled path (the sampled-path analogue of p0).
    under-confident (mean top-1 probability about 0.40 against the target's 0.86) rather than
    informative about the target's alternatives. This is the mechanism behind §8d and §9c.
 2. In the cost model, alpha 0.411 at `n-max 3` gives
-   $(1+0.411+0.169+0.069)/1.428 = 1.15x$, below the greedy 1.22x. **Probabilistic drafting is
-   strictly worse today.** It is also not wired for eagle3 at all: the draft loop always takes
-   `cur_p->data[0].id` and never fills `result_q` (`common/speculative.cpp`), so the flag is a no-op.
-3. 120 t/s needs alpha about 0.62 at `n-max 3`; the gap is ~0.21 of distribution overlap. That is a
-   head trained against the target's *distribution* (soft labels), not against the argmax, and
-   whether it can reach 0.62 is unknown. No later stage assumes it.
+   $(1+0.411+0.169+0.069)/1.428 = 1.15x$, below the greedy 1.22x. It is also not wired for eagle3
+   at all: the draft loop always takes `cur_p->data[0].id` and never fills `result_q`
+   (`common/speculative.cpp`), so the flag is a no-op today. **That makes 1.15x a prediction, not a
+   measurement** — there is nothing to run yet.
+3. Reaching about 1.5x over the no-head server in the cost model needs alpha about 0.62 at `n-max 3`;
+   the gap is ~0.21 of distribution overlap. That is a head trained against the target's
+   *distribution* (soft labels), not against the argmax, and whether it can reach 0.62 is unknown. No
+   later stage assumes it.
 
 ### 13d. p1: the second step is 0.107, and the hidden state is the whole reason
 
@@ -1036,9 +1052,9 @@ sampled path (the sampled-path analogue of p0).
   oracle would give $(1+0.457+0.457\cdot0.555)/1.312 = 1.30x$ against 1.22x for `n-max 1`: +6.5%,
   in the perfect case. Break-even against `n-max 1` needs p1 >= 0.31, which a realistic 60-70%
   recovery only reaches once p0 is also above ~0.55.
-- So `n-max 2` is a last-mile bonus worth at most ~+6%. It cannot contribute to 120-140 t/s.
+- So `n-max 2` is a last-mile bonus worth at most ~+6%. It cannot carry a 1.5x target on its own.
 
-### 13e. channel: the answer phase is untrained and measures 0.385
+### 13e. channel: the answer phase is essentially untrained and measures 0.385
 
 - Thinking, 900 tokens, 48 prompts: 43,029 scored rows, of which 24 are in the answer channel.
   **1 of 48 prompts** reaches the answer inside 900 tokens. p0(thinking) = **0.493**.
@@ -1056,9 +1072,9 @@ sampled path (the sampled-path analogue of p0).
 | long context | 0.470 |
 
 Summarisation answers are the weakest (0.30) and translation answers the strongest (0.45), which is
-the same ordering as the thinking channel — but shifted down by about 0.1. S2b has zero answer rows,
-so the S3 answer slice should be weighted to summarisation and translation answers. This is also the
-number to quote for a thinking-off session, which no earlier gate covered.
+the same ordering as the thinking channel — but shifted down by about 0.1. S2b's own response text is only
+0.46% answer (§11g), so the S3 answer slice should be weighted to summarisation and translation
+answers. This is also the number to quote for a thinking-off session, which no earlier gate covered.
 
 ### 13f. context drift: p0 halves between 2k and 32k
 
@@ -1073,6 +1089,8 @@ One document repeated to the target length, 64 greedy tokens at the end.
 
 - Extraction is capped at `n_ctx 16384` (§11c), so 32k is outside the training distribution; but the
   decline starts well inside it (8k -> 16k is -0.125), so this is not only an extrapolation artefact.
+- The probe replays the generated rows only, so the draft's own prompt context is absent (§13b). It
+  measures feature drift with depth, not the runtime's long-context acceptance.
 - At 0.219 the estimated decode speed-up is 1.02x. On 32k documents the head is currently worth
   nothing, which matters more for document work than any multi-token change.
 - One caveat: the probe repeats a document, so the continuation is synthetic. The ordering is still
@@ -1086,7 +1104,7 @@ One document repeated to the target length, 64 greedy tokens at the end.
    runtime patch is small — the ngram implementations in `common/speculative.cpp` already show the
    pattern — but it must not be built before an offline alpha clears ~0.62.
 3. **`n-max 2` is bounded at +6.5%** (13d). Worth a recipe change only after p0 has moved.
-4. The 120-140 t/s question is answered: it needs alpha >= 0.62, or a p0 near the 0.869 argmax
+4. The throughput question is answered: about 1.5x needs alpha >= 0.62, or a p0 near the 0.869 argmax
    ceiling that no greedy draft can exceed. The head sits at 0.457 with 0.53 of the ceiling, so the
    realistic band is +0.05-0.10 p0, i.e. about 1.25-1.30x.
 
@@ -1135,12 +1153,12 @@ inside the corpora with room to spare.
 ### 14d. What it does not tell us
 
 The smoke proves the plumbing, not a gain. Whether the answer slice moves p0 has to be measured with
-the same D1 matrix plus the `--think-off` probe, on a corpus large enough to matter (S3: 12-16M
-unique rows).
+the same D1 matrix plus the `--think-off` probe, on a corpus large enough to matter (the run used
+7.77M rows, §14e).
 
 ### 14e. The S3 run
 
-Four segments of ~1.94M rows (**7.77M rows**, 8.19M token updates), 4,000 steps, 57 minutes. Final
+Four segments of ~1.94M rows (**7.77M rows**, 8.19M token updates), 4,000 steps. Final
 train CE 1.94, top-1 0.673. Every task filled its quota in every segment, so the `--chars-per-token
 2.2` sizing worked, and `--long-concat-chars 64000` gave each segment eight joined documents of
 about 29k tokens.
@@ -1151,6 +1169,30 @@ about 29k tokens.
 | answer channel (`--think-off`) | 0.385 | **0.462** | +0.076 |
 | p0 at 2k / 8k / 16k / 32k | 0.484 / 0.406 / 0.281 / 0.219 | **0.594 / 0.422 / 0.375 / 0.250** | +0.110 / +0.016 / +0.094 / +0.031 |
 | p1, second draft step | 0.106 | 0.113 | +0.007 |
+
+The replay scores every generated position against the target's argmax; llama.cpp counts accepted
+drafts per verification step. Re-running the 48 prompts online with a greedy target (temperature 0,
+`d0_matrix.py --temps 0.0 --modes greedy`) and the released Q8 head gives **0.549** against the
+replay's **0.502** (both step-weighted: accepted over verification steps, the basis `d0_report.py`
+and `p0_diag.py` already report):
+
+| workload | online, temp 0 | replay | difference |
+|---|---:|---:|---:|
+| chat | 0.428 | 0.417 | +0.011 |
+| Chinese -> English | 0.624 | 0.537 | +0.087 |
+| English -> Chinese | 0.674 | 0.548 | +0.126 |
+| Chinese -> Chinese summary | 0.573 | 0.478 | +0.095 |
+| English -> Chinese summary | 0.513 | 0.461 | +0.052 |
+| document organisation | 0.575 | 0.506 | +0.069 |
+| long context | 0.419 | 0.540 | -0.121 |
+| **all** | **0.549** | **0.502** | **+0.047** |
+
+The online number is higher on every workload except long context: there the replay starts the draft
+at the first generated row and never sees the 13–14k prompt where the head degrades (§13f), which is
+the likely reason it reads 0.540 against 0.419. At greedy the replay is 0.047 low; the deployment
+matrix is a different protocol (temp 1.0) and reads 0.495, below the replay because the target samples
+there. The command above reproduces the online column; the replay column comes from the `p0_diag.py
+--mode p1` run in the first table of this section.
 
 Per workload, p0: chat 0.331 -> 0.417, zh->en 0.468 -> 0.537, en->zh 0.491 -> 0.548,
 zh summary 0.475 -> 0.478, en->zh summary 0.418 -> 0.461, organisation 0.480 -> 0.506,
@@ -1171,23 +1213,25 @@ Three things follow:
 
 ### 14f. Wall clock: decode wins everywhere, prefill pays once
 
-Online A/B, temp 1.0, Q8_0 head, the same server with and without `-md`. Each request is split into
-decode (`n_predicted / predicted_per_second`) and the remainder, which is prompt processing:
+Online A/B, temp 1.0, Q8_0 head, the same model with and without `-md`. Each request is split into
+decode (`n_predicted / predicted_per_second`) and the remainder, which is prompt processing. Only
+ratios are shown here; absolute throughput belongs in `AGENTS.local.md`.
 
-| workload (prompt length) | decode | prefill | wall clock |
-|---|---:|---:|---:|
-| chat (85-136) | 1.15x | +0.6 s over 6 requests | 1.06x |
-| translation / summary / organisation (0.5-4k) | 1.21-1.35x | +0.1-0.5 s over 6 | 1.17-1.30x |
-| long context, 128-token replies (13-14k) | **1.20x** | +3.6 s over 6 | 0.92x |
-| long context, 512-token replies (13-14k) | **1.20x** | +3.5 s over 6 | **1.06x** |
+| workload (prompt length) | decode | wall clock |
+|---|---:|---:|
+| chat (85-136) | 1.15x | 1.06x |
+| translation / summarisation / organisation (0.5-4k) | 1.21-1.35x | 1.17-1.30x |
+| long context, 128-token replies (13-14k) | **1.20x** | 0.92x |
+| long context, 512-token replies (13-14k) | **1.20x** | **1.06x** |
 
 - **Decode is 1.15-1.35x faster at every length measured, including 13-14k.** The head never slows
   decoding; p0 0.42 at that length is enough to beat the draft pass.
-- The cost is prefill: with `-md` the draft also processes the prompt, so prompt handling is ~28%
-  slower at 14k (+0.6 s per request) and ~20-30% slower at short lengths (+0.05-0.1 s).
+- The cost is prefill: with `-md` the draft also processes the prompt — encoder and decoder over
+  every verified token (`process()` in `common/speculative.cpp`) — so prompt processing is about
+  28% slower at 14k and a few percent slower at short context.
 - That is a fixed per-request cost, so it amortises over the reply. At 14k the break-even is about
   280 generated tokens: a 128-token reply loses 8%, a 512-token reply wins 6%. At short context the
-  break-even is a few dozen tokens.
+  break-even is tens of tokens.
 - The first reading of this table said "long context is slower" and it was wrong: the 128-token
   benchmark spent 57% of its wall time in prefill. The same six prompts at 512 tokens flip the sign.
 
@@ -1199,7 +1243,7 @@ over all 48); it is a reply-length artefact as much as a head result.
 
 - **Ship S3 and leave it on.** There is no context-length switch worth building: decode improves at
   every length, and the prefill overhead pays back after roughly 300 generated tokens at 14k and
-  after a few dozen at short context.
+  after tens of tokens at short context.
 - The only regime that can lose is a very long prompt with a very short reply (a question over a
   30k-token document answered in 100 tokens). If that pattern matters, the fix is cheaper prompt
   handling in the draft, not a toggle: llama.cpp currently runs the draft over the prompt.
@@ -1217,53 +1261,46 @@ over all 48); it is a reply-length artefact as much as a head result.
 3. **Contiguous KV within a chunk**: keeping it is closer to live long-context behaviour, but the
    nine full-attention layers slow down with depth; resetting per chunk truncates the first 512
    tokens of context.
-4. **How much of the remaining gap is data volume?** 2.05 epochs per segment is still repetition;
-   §7c shows the gain saturating by step 500 for three of four probes (`zh_daily` excepted), so
-   the next marginal step is *more unique tokens* (S3, 12–16M) rather than more steps.
+4. **How much of the remaining gap is data volume?** S3 ran 7.77M rows at about one epoch (§14e);
+   whether 12-16M adds anything over that is untested. §7c showed the gain saturating by step 500 for
+   three of four probes, which favours more unique rows over more steps.
 5. **`lambda` for the training-time test**: 0.5 was a guess (§7a). A/B it now that the pipeline is
    cheap: two 2000-step runs with 0 and 1.0 would bracket the useful range.
 6. **Can a distribution-trained head clear alpha 0.62?** (§13c) The current head's overlap is 0.362
    at the deployment law and 0.411 at its best temperature, i.e. no more than its argmax match. Soft
    labels / KD are the only route to probabilistic drafting, and the offline `alpha` probe is the
    gate: do not wire the runtime before it clears ~0.62.
-7. **How much answer-channel data, and at what weight?** (§13e) The answer phase measures 0.385
-   against 0.493 in thinking, with summarisation answers weakest. The pipeline now exists (§14):
-   `gen_nlp_data.py --think-off` builds the corpus and `--answer-weights` mixes it. What is unknown
-   is the weight, and whether the answer phase moves at all.
-8. **Is the context drop a training cap or genuine feature drift?** (§13f, answered in §14e) S3's
-   joined 29k-token documents lift 16k from 0.281 to 0.375 but 32k only from 0.219 to 0.250, so part
-   of the drop was the training window and part is not. The cost side matters more: at 13-14k the
-   verification overhead grows and the head is a net 0.92x (§14f).
-9. **What exactly does the draft do during prefill?** (§14f) With `-md`, prompt processing is ~28%
-   slower at 14k and ~20-30% at short lengths, while decode is untouched. That is consistent with the
-   draft encoder/decoder running over the prompt instead of only at the boundary, which would be a
-   llama.cpp optimisation rather than a head problem.
+7. **How much answer-channel data, and at what weight?** (§13e, answered in §14e) Training on the
+   answer channel moved p0 from 0.385 to 0.462, so the phase does respond. S3 already spends **45% of
+   its training rows** on it (weights 0.41 of 0.91), so the open question is not the weight but
+   whether more *unique* answer rows help: the slice runs at about one epoch.
+8. **Is the context drop a training cap or genuine feature drift?** (§13f, partly answered in §14e)
+   S3's joined 29k-token documents lift 16k from 0.281 to 0.375 but 32k only from 0.219 to 0.250, so
+   part of the drop was the training window and part is not. The cost side is settled: decode stays
+   1.20x at 13-14k, and the head is only a net loss when the reply is shorter than ~280 tokens at
+   13-14k (§14f).
+9. **What exactly does the draft do during prefill?** (§14f, answered) It processes the prompt:
+   `process()` in `common/speculative.cpp` runs the encoder over every verified token and then the
+   decoder over the same tokens, prompt included. That explains the ~28% prompt-processing overhead.
+   Whether it could skip the decoder rows outside the boundary is a llama.cpp question, not a head one.
+10. **Should the offline replay score per step instead of per position?** (§13b, §14e) The replay
+    scores every position and reads 0.502 at greedy; llama.cpp counts accepted drafts per
+    verification step and reads 0.549. A per-step replay would remove that counting mismatch, but the
+    missing draft prompt context (§13b) would remain, so it closes part of the gap, not all of it.
 
 ## Next step
 
-D0 (§8), D1 (§9) and D2 (§10) settle the measurement and vocabulary questions: at the S2a stage
-the head converts about a third of the target's top-1 ceiling (S2b raises it to 0.529),
-temperature and probabilistic drafting change nothing, and the 48K bilingual vocabulary lifts
-held-out-step coverage from 0.939 to 0.971 overall (ASCII 0.900 to 0.959) plus a held-out English
-Wikipedia slice from 0.684 to 0.960. The next stage:
+S3 is the current head (`docs/notes.md` §14): 7.77M rows, p0 0.495 online, the answer channel 0.385
+→ 0.462, 16k context 0.281 → 0.375, decode 1.15-1.35x at every length measured. What is left, in
+order of measured value:
 
-1. **S2b (workload)**: done (§11). 3.46M training tokens from ~4.78M generated tokens, D1 mean
-   0.344 -> 0.460, every workload up. The answer phase remains untrained because the generated
-   responses stop inside the thinking channel.
-2. **S3 (scale)**: 12-16M unique tokens with the S2b mixture, a no-thinking / answer slice, and
-   a last-mile pass on the daily mix; D1 is the gate.
+1. **More unique answer and short-document data.** The answer slice was the largest single gain
+   (+0.076) and already takes 45% of the rows at about one epoch; chat, which the short pool
+   recovered, is still the weakest workload at 0.380. Both need new tokens, not a bigger weight.
+2. **Long context above 16k.** 32k only moved 0.219 → 0.250. The joined documents reach ~29k, so the
+   next step is real 32k documents or a length-weighted sample of the long shards.
+3. **`n-max 2`**, only if p1 clears 0.31 (it is 0.113) — bounded at +6.5% even then (§13d).
+4. **KD / soft labels**, only if an offline alpha clears ~0.62 (it is 0.411) — the runtime cannot
+   sample today (§13c).
 
-Probabilistic drafting and the sampling temperature are not training levers at present; they stay
-parked until the head is calibrated.
-
-P0 (§13) measured the four questions S2b left open. The head's distribution overlap is 0.362 at the
-deployment law and 0.411 at its best temperature — no more than its argmax match, so probabilistic
-drafting is strictly worse than greedy until the head is trained against a distribution. The
-runtime's second draft step keeps 0.107 of the acceptances against 0.555 with the target's own
-hidden, which bounds `n-max 2` at +6.5% even for a perfect hidden-feedback recipe. The answer
-channel, which S2b never trained, measures 0.385 against 0.493 in the thinking channel, with
-summarisation answers weakest. And p0 falls from 0.484 at 2k context to 0.219 at 32k.
-
-S3 therefore keeps its shape but changes its contents: an answer-channel slice weighted to
-summarisation and translation, and long-context shards at 32k or more. Probabilistic drafting and
-`n-max 2` stay parked behind the numbers P0 now defines.
+Probabilistic drafting and the sampling temperature stay parked behind those numbers.

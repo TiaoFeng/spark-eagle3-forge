@@ -56,18 +56,18 @@ $$\text{speed-up} = \frac{1+p_0}{1.12} \qquad \text{break-even } p_0 \approx 0.1
 |---|---:|---:|---:|---:|---:|---:|
 | speed-up | 0.94x | 1.00x | 1.12x | 1.19x | 1.28x | 1.38x |
 
-**Correction (`notes.md` §12).** The +12% was measured with the v8 head (422 MB), and it is almost
+**Correction (`notes.md` §12).** The +12% was measured with the v8 head (422 MiB), and it is almost
 exactly that head's bytes over the target's — so the constant hides the head size. Measured per-pass
 costs separate a fixed overhead from the draft pass:
 
 $$S=\frac{1+p_0}{1+f+d},\qquad f\approx0.08,\qquad
-d_{bf16}\approx0.186,\; d_{q8}\approx0.116,\; d_{q4}\approx0.098$$
+d_{bf16}\approx0.17,\; d_{q8}\approx0.116,\; d_{q4}\approx0.098$$
 
 $f$ is the verification batch carrying one extra token plus the sampler chain and the draft's
 boundary decode; it does not shrink with the head. Two consequences: the table above is ~10%
-optimistic for today's head (Q8_0 at p0 0.46 gives 1.217x, not 1.31x), the break-even rises to
+optimistic for today's head (Q8_0 at p0 0.46 gives about 1.22x, not 1.31x), the break-even rises to
 $p_0\approx0.20$ at Q8_0, and cutting the draft file below 8 bits buys little (Q8_0 → Q4_K_M is
-another third off the file for 0.018 of a pass, against 0.070 for bf16 → Q8_0).
+another third off the file for 0.018 of a pass, against 0.054 for bf16 → Q8_0).
 
 Verified conclusions about the inference parameters:
 
@@ -81,9 +81,9 @@ Verified conclusions about the inference parameters:
 
 ---
 
-### 2.3 The hard ceiling on p0: a 32K draft vocabulary
+### 2.3 The hard ceiling on p0: the draft vocabulary
 
-The head emits one value per draft-vocabulary id (32000 for v8/S2a, 48000 for S2b); the runtime
+The head emits one value per draft-vocabulary id (32000 for v8/S2a, 48000 for S2b/S3); the runtime
 scatters them back into the 131072 target vocabulary with `d2t` and everything else is
 `-INFINITY`. Therefore
 
