@@ -3,7 +3,7 @@
 Retrain the EAGLE-3 draft head for Spark-X2.6-4B (FIT-Q6_K abliterated). The goal is a higher
 draft acceptance rate in the **Chinese + thinking** workload, so speculative decoding speeds up
 single-sequence decode. The scope has since widened to the whole bilingual NLP mix (translation,
-summarisation, document organisation, chat), where the released S2b head is measured.
+summarisation, document organisation, chat), where the released S3 head is measured.
 
 The upstream public head `VitreousCut/Spark-X2.6-4B-EAGLE3` (v8) only reaches p0 0.01–0.33 in
 Chinese, against 0.46–0.92 in the author's English setup, so its payoff is unstable. That gap is
@@ -19,26 +19,24 @@ what this project is about.
 
 ## 0. Where we are
 
-Released head is **S2b (48K)**: D1 NLP mix p0 0.344 → 0.460, coverage 0.979–0.995
-(`docs/notes.md` §11). It supersedes S2a (32K) on Chinese workloads. G0–G3c pass; **G4
-belongs to S2a and missed by 0.002** (`chat_think` 0.3281 vs 0.33). S2b's own gates
-(`docs/notes.md` §11f) pass except the online wall-clock A/B, not measured. Next is S3:
-scale to 12–16M tokens with the S2b mixture. Protocol P and all run evidence:
-`docs/notes.md` §6–§11.
+Released head is **S3 (48K, Q8_0)**: D1 NLP mix p0 0.344 (S2a) → 0.460 (S2b) → **0.495**, coverage
+0.979–0.995, decode 1.15–1.35x faster. S2b and S2a are kept in the HF repo's `legacy/`; v8 is only a
+warm-start source. G0–G3c pass; **G4 belongs to S2a and missed by 0.002** (`chat_think` 0.3281 vs
+0.33). Run evidence: `docs/notes.md` §6–§11, §13–§14.
 
-P0 (`docs/notes.md` §13) then bounded what is left. The head's distribution overlap is no better
-than its argmax match (0.362 / 0.411 against 0.421), so probabilistic drafting is not a lever until
-the head is trained against a distribution. The runtime's second draft step keeps 0.107 of the
-acceptances against 0.555 with the target's own hidden, capping `n-max 2` at +6.5%. The untrained
-answer channel measures 0.385 against 0.493 in thinking, and p0 falls from 0.484 at 2k context to
-0.219 at 32k. S3 therefore adds an answer-channel slice and 32k shards.
+P0 (`docs/notes.md` §13) bounded what was left. The head's distribution overlap is no better than its
+argmax match (0.362 / 0.411 against 0.421), so probabilistic drafting is not a lever until the head is
+trained against a distribution. The runtime's second draft step keeps 0.107 of the acceptances against
+0.555 with the target's own hidden, capping `n-max 2` at +6.5%. The answer channel — 0.46% of S2b's
+response text, 0.385 at 128 tokens against 0.493 for thinking at 900 — was effectively untrained, and
+p0 falls from 0.484 at 2k context to 0.219 at 32k. That is what S3 set out to fix.
 
 S3 (`docs/notes.md` §14) is trained and measured: 7.77M rows, p0 0.457 → **0.502** offline (0.495
-online), the answer channel 0.385 → **0.462**, 16k context 0.281 → **0.375**, 32k only 0.219 →
-0.250. Short-context NLP work runs **1.19x** faster, and decode is **1.20-1.35x** faster at every
-length measured, including 13-14k. The head's only cost is prefill: with `-md` the draft also
-processes the prompt, ~28% slower at 14k, which pays back after ~300 generated tokens (0.92x at
-128-token replies, 1.06x at 512). The 1.3x wall-clock gate is not met on 128-token replies.
+online at temp 1.0), the answer channel 0.385 → **0.462**, 16k context 0.281 → **0.375**, 32k only
+0.219 → 0.250. Short-context NLP work runs **1.19x** faster, and decode is **1.15–1.35x** faster at
+every length measured, including 13–14k. The head's only cost is prefill: with `-md` the draft also
+processes the prompt, which pays back after ~300 generated tokens at 14k (0.92x at 128-token replies,
+1.06x at 512). The 1.3x wall-clock gate is not met on 128-token replies.
 
 ## 1. Hard constraints (non-negotiable)
 
@@ -62,9 +60,10 @@ Derivations and measurements live in [`docs/facts.md`](docs/facts.md). Index onl
 - [2.1 Model and runtime](docs/facts.md#21-model-and-runtime) —
   depth, width, RoPE, tied embedding, and the four constraints a 12 GiB single machine imposes
 - [2.2 Cost model](docs/facts.md#22-cost-model-the-core-formula) —
-  $\text{speed-up}=(1+p_0)/1.12$, break-even 0.12, `n-max` must be 1, the training target must be
-  the target model's argmax
-- [2.3 The hard ceiling on p0](docs/facts.md#23-the-hard-ceiling-on-p0-a-32k-draft-vocabulary) —
+  $(1+p_0)/1.12$ is the first-order form; `docs/notes.md` §12c corrects it to $(1+p_0)/(1+f+d)$,
+  which is what every S2b/S3 number uses. `n-max` must be 1, the training target must be the target
+  model's argmax
+- [2.3 The hard ceiling on p0](docs/facts.md#23-the-hard-ceiling-on-p0-the-draft-vocabulary) —
   $p_0 \le$ coverage, v8's vocabulary is almost entirely ASCII, rebuilding takes it 0.245 → 0.939
 - [2.4 llama.cpp changes required](docs/facts.md#24-llama.cpp-changes-required) —
   the `t_layer_inp` patch, a private header, and why the shim must be C++
@@ -76,10 +75,10 @@ Derivations and measurements live in [`docs/facts.md`](docs/facts.md). Index onl
 | Feature source | **llama.cpp (the Q6_K weights)** | Same weights as deployment, so train and deploy see identical features; no 8.2 GB download and no fused-qkv surgery |
 | Training framework | Plain PyTorch (hand-written single decoder layer) | 218M parameters (32K head; 259M at 48K); no exposure to transformers version churn |
 | Training target | CE against the **target's argmax** | The runtime only ever proposes an argmax; the author measured relabelling taking acceptance 0.49 → 0.81 |
-| Second loss term | Training-time test (feed the draft its own output) | The author measured p0 0.50 → 0.70 |
+| Second loss term | Mixed-token training-time test (the draft's own argmax at p=0.5) | The author measured p0 0.50 → 0.70. It approximates the token-level accept/reject only: the runtime's own-hidden second step is not trained (`docs/notes.md` §13d) |
 | Feature precision | bf16 (llama.cpp gives F32; round-to-nearest-even before storing) | Doubles capacity. **v8's weights are F32**, so bf16 is our trade-off, not an inheritance; the evaluator must round the same way |
 | Feature storage | **memfd + mmap** | Pure RAM, no tmpfs quota, no NVMe writes, no root |
-| Draft head precision | **Q8_0** (`scripts/quantize_head.sh`; bf16 kept for A/B) | Same argmax as bf16 over 6144 NLP tokens, and 46% smaller draft file → +4.4% decode. The loader takes any GGML type; only `d2t` must stay I64 (`docs/notes.md` §12) |
+| Draft head precision | **Q8_0** (`scripts/quantize_head.sh`; bf16 kept for A/B) | Acceptance indistinguishable from bf16 (0.4541 vs 0.4537) and a 46% smaller draft file → +4.9% decode and +4.1% wall clock against bf16. 8-bit is *expected* to preserve the argmax; that was not checked row by row. The loader takes any GGML type; only `d2t` must stay I64 (`docs/notes.md` §12) |
 | Starting point (S2a) | v8 warm start, **`lm_head` retrained** | Only 4,243 of 32,000 rows overlap; the rest are re-initialised |
 | Starting point (S2a onward) | warm-start from the previous checkpoint on the same vocabulary | S2b = S2a → 48K union: keep 32,000 rows, randomly initialise 16,000 new rows (`docs/notes.md` §10b) |
 | Segmentation | extract → train → checkpoint immediately, per segment | Features live in RAM; a dead process loses them |
@@ -159,8 +158,9 @@ spark-eagle3-forge/
 │   ├── d0_report.py           # D0: aggregate the matrix into tables
 │   ├── record_steps.py        # record greedy steps for vocabulary scoring
 │   ├── build_union_vocab.py   # 48K union: keep the base ids, append English ids
-│   ├── gen_nlp_data.py        # generate the S2b NLP corpus with the target
-│   ├── train_s2b.py           # S2b: contiguous features + mixed-token TTT
+│   ├── gen_nlp_data.py        # generate the thinking / answer NLP corpora with the target
+│   ├── train_s2b.py           # NLP driver: contiguous features + mixed-token TTT (S2b, S3)
+│   ├── quantize_head.sh       # checkpoint → Q8_0 draft GGUF (bf16 kept for A/B)
 │   ├── check_public.sh        # leak check (also installed as a pre-commit hook)
 │   └── install_hooks.sh       # install that hook locally
 ├── configs/                   # reserved for stage configs; currently empty
@@ -247,56 +247,21 @@ csrc/build/sp_gen_cli --model "$MODELS_DIR/<target>.gguf" \
     --out-md logs/d1_report.md --out-json logs/d1_report.json
 ```
 
-### The regular cycle
+### The regular cycle (S3)
 
 ```bash
 # G0: feature self-consistency (no training needed)
 csrc/build/sp_feat_cli --model "$MODELS_DIR/<target>.gguf" \
     --text AGENTS.md --ctx 1024 --tokens 512 --layers 0,2,18,33 --add-bos
 
-# S2b: generate the NLP corpus, then train the 48K head
+# generate both channels, then train S3 from the S2b head
 .venv/bin/python scripts/gen_nlp_data.py \
     --server "$LLAMACPP_ROOT/build/bin/llama-server" \
     --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp
-.venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
-    --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/head_init_48k.pt \
-    --out checkpoints/s2b --steps 2000 --segments 4
-
-# Stage 3: offline p0 (`--head checkpoints/s2b.pt` for the released head)
-.venv/bin/python -m spark_eagle3.eval_p0 --model "$MODELS_DIR/<target>.gguf" \
-    --head checkpoints/s2b.pt --dtype bfloat16 --n-gen 256 \
-    --prompt-file datasets/prompts/rendered/zh_tech.txt --out logs/p0.json
-
-# Stage 3: export to GGUF (G2); the tokenizer is copied from an existing head GGUF
-.venv/bin/python -m spark_eagle3.export_gguf --ckpt checkpoints/s2b.pt \
-    --out "$MODELS_DIR/spark-eagle3-s2b.gguf" \
-    --tokenizer-from "$MODELS_DIR/spark-eagle3-v8.gguf"
-
-# Stage 3b: quantise the draft head (Q8_0 = same argmax, +4.4% decode; notes §12)
-scripts/quantize_head.sh checkpoints/s2b.pt "$MODELS_DIR/spark-eagle3-s2b-q8.gguf"
-
-# Stage 3: online p0 (llama-server's draft acceptance is p0)
-.venv/bin/python scripts/g1_online.py \
-    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
-    --model "$MODELS_DIR/<target>.gguf" --head "$MODELS_DIR/spark-eagle3-s2b-q8.gguf" \
-    --prompt-file datasets/prompts/rendered/zh_tech.txt \
-    --n-predict 128 --out logs/g1_online.json --server-log logs/g1_server.log
-```
-
-### S3 (in progress)
-
-P0 (`docs/notes.md` §13) added two data requirements, and both were pipeline changes rather than
-model changes (`docs/notes.md` §14): the answer channel has no training rows, and documents shorter
-than `seq_len + 1` rows used to be dropped by the window sampler.
-
-```bash
-# answer-channel corpus: the same tasks with thinking disabled, its own directory
 .venv/bin/python scripts/gen_nlp_data.py \
     --server "$LLAMACPP_ROOT/build/bin/llama-server" \
     --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp_answer \
-    --think-off --n-predict 384 --long-n-predict 640 --parallel 4
-
-# S3: warm start from S2b, answer slice, short-window pool, 32k extraction
+    --think-off --n-predict 512 --long-n-predict 640 --parallel 4
 .venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
     --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/s2b.pt \
     --out checkpoints/s3 --steps 4000 --segments 4 --tokens-per-segment 2300000 \
@@ -305,42 +270,79 @@ than `seq_len + 1` rows used to be dropped by the window sampler.
     --answer-weights sum=0.06,trans=0.15,org=0.05,chat=0.06,long=0.09 \
     --short-seq-len 256 --short-mix 0.25 --chars-per-token 2.2 \
     --long-concat-chars 64000 --n-ctx 32768
+
+# Stage 3: offline p0 (`--head checkpoints/s3.pt` for the released head)
+.venv/bin/python -m spark_eagle3.eval_p0 --model "$MODELS_DIR/<target>.gguf" \
+    --head checkpoints/s3.pt --dtype bfloat16 --n-gen 256 \
+    --prompt-file datasets/prompts/rendered/zh_tech.txt --out logs/p0.json
+
+# Stage 3: export to GGUF (G2); the tokenizer is copied from an existing head GGUF
+.venv/bin/python -m spark_eagle3.export_gguf --ckpt checkpoints/s3.pt \
+    --out "$MODELS_DIR/spark-eagle3-s3-48k.gguf" --name spark-eagle3-s3-48k \
+    --tokenizer-from "$MODELS_DIR/spark-eagle3-v8.gguf"
+
+# Stage 3b: quantise the draft head (Q8_0: acceptance indistinguishable from bf16, +4.9% decode; notes §12)
+scripts/quantize_head.sh checkpoints/s3.pt "$MODELS_DIR/spark-eagle3-s3-48k-q8.gguf"
+
+# Stage 3: online p0 (llama-server's draft acceptance is p0)
+.venv/bin/python scripts/g1_online.py \
+    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+    --model "$MODELS_DIR/<target>.gguf" --head "$MODELS_DIR/spark-eagle3-s3-48k-q8.gguf" \
+    --prompt-file datasets/prompts/rendered/zh_tech.txt \
+    --n-predict 128 --out logs/g1_online.json --server-log logs/g1_server.log
 ```
 
-Checkpoint names follow `--out`, so this writes `checkpoints/s3.pt` and leaves the S2b head alone.
-The weights are sized to the corpus on hand (4.86M thinking + 4.03M answer tokens);
-`--chars-per-token 2.2` is the measured 2.03-2.66 minus margin, so four segments never run past the
-end of a file. `--long-concat-chars 64000` joins the long-task records into ~29k-token documents,
-which is what exercises the 32k context P0 found untrained.
+Checkpoint names follow `--out`, so this writes `checkpoints/s3.pt`. The weights are sized to the
+corpus on hand (4.86M thinking + 4.03M answer tokens); `--chars-per-token 2.2` is the measured
+2.03–2.66 minus margin, so four segments never run past the end of a file. `--long-concat-chars
+64000` joins the long-task records into ~29k-token documents, reaching past S2b's 16k window (S3
+extracts at 32k); the 32k end stays weak (0.219 → 0.250, `docs/notes.md` §14e).
+
+### Historical stages (S2a, S2b)
+
+S2b built the 48K vocabulary and trained on the thinking channel only (3.46M rows); S2a rebuilt the
+32K vocabulary from v8. Both are superseded by S3 and kept in the HF repo's `legacy/`; their numbers
+are in `docs/notes.md` §9–§11. Reproducing them starts from the S2a warm start, not from the released
+head:
+
+```bash
+# S2b: generate the thinking corpus, then train the 48K head from the S2a warm start
+.venv/bin/python scripts/gen_nlp_data.py \
+    --server "$LLAMACPP_ROOT/build/bin/llama-server" \
+    --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp
+.venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
+    --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/head_init_48k.pt \
+    --out checkpoints/s2b --steps 2000 --segments 4
+```
 
 ### P0 diagnostics (measurement only)
 
-Four offline probes that decide the next stage; all of them replay through the head in PyTorch, so
-they are hardware independent and comparable with protocol P (`docs/notes.md` §13). Nothing here
-trains.
+Four offline probes that decided S3's data plan; all of them replay through the head in PyTorch, so
+they are hardware independent and comparable with protocol P (`docs/notes.md` §13). §13 measured the
+S2b head and §14e the S3 head; the commands below use the released one. Nothing here trains.
 
 ```bash
 # alpha: distribution overlap sum_x min(p, q) at the deployment sampling law
 .venv/bin/python scripts/p0_diag.py --mode alpha --model "$MODELS_DIR/<target>.gguf" \
-    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
+    --head checkpoints/s3.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
     --out logs/p0_alpha.json
 
 # p1: the runtime's second draft step, split into the token/hidden variants
 .venv/bin/python scripts/p0_diag.py --mode p1 --model "$MODELS_DIR/<target>.gguf" \
-    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
+    --head checkpoints/s3.pt --prompt-dir datasets/prompts/nlp --n-gen 128 \
     --out logs/p0_p1.json
 
 # channel: p0 by thinking / answer channel; --think-off renders the no-thinking prompt
 .venv/bin/python scripts/p0_diag.py --mode channel --model "$MODELS_DIR/<target>.gguf" \
-    --head checkpoints/s2b.pt --prompt-dir datasets/prompts/nlp --n-gen 900 \
+    --head checkpoints/s3.pt --prompt-dir datasets/prompts/nlp --n-gen 900 \
     --out logs/p0_channel.json
 .venv/bin/python scripts/p0_diag.py --mode channel --think-off \
-    --model "$MODELS_DIR/<target>.gguf" --head checkpoints/s2b.pt \
+    --model "$MODELS_DIR/<target>.gguf" --head checkpoints/s3.pt \
     --prompt-dir datasets/prompts/nlp --n-gen 128 --out logs/p0_answer.json
 
-# ctx: p0 as a function of session context length
+# ctx: p0 as a function of session context length (one document repeated, 64 tokens)
 .venv/bin/python scripts/p0_diag.py --mode ctx --model "$MODELS_DIR/<target>.gguf" \
-    --head checkpoints/s2b.pt --doc datasets/prompts/nlp/nlp_zh2en_01.txt \
+    --head checkpoints/s3.pt --doc datasets/prompts/nlp/nlp_zh2en_01.txt \
     --ctx-lens 2048,8192,16384,32768 --n-gen 64 --out logs/p0_ctx.json
 ```
 
@@ -369,7 +371,7 @@ The repo records **no absolute paths**; every location comes from an environment
 | Variable | Purpose |
 |---|---|
 | `LLAMACPP_ROOT` | llama.cpp checkout (`build/bin/llama` present, `spark2_5` patched) |
-| `MODELS_DIR` | holds the target Q6_K GGUF and `spark-eagle3-v8.gguf` |
+| `MODELS_DIR` | holds the target Q6_K GGUF and the released head (`spark-eagle3-s3-48k-q8.gguf`); `spark-eagle3-v8.gguf` is only a warm-start and tokenizer source |
 | `SPARK_START` | script that launches llama-server |
 | `PYTHON_ENV` | Python environment with torch / safetensors / gguf (the repo-root `.venv` symlink points at it) |
 
@@ -390,22 +392,28 @@ Already downloaded (all under the gitignored `datasets/`):
 
 ## 8. Gates (hard stops)
 
-All p0 numbers are on **protocol P** (`docs/notes.md` §6): `eval_p0.py --dtype bfloat16 --n-gen 256`,
-greedy, on prompts rendered with the model's own chat template.
+G0–G3c use **protocol P** (`docs/notes.md` §6): `eval_p0.py --dtype bfloat16 --n-gen 256`, greedy,
+on prompts rendered with the model's own chat template. The S2b/S3 rows below are **not** protocol P:
+0.460/0.495 are the D1 online matrix (temperature 1.0, 128 tokens) and 0.502 is the 128-token
+offline replay.
 
 G0–G3c pass (evidence: `docs/notes.md` §§3, 5c, 7); the gates are:
 
 | Gate | Condition | Status |
 |---|---|---|
 | **G4 ship (S2a)** | `chat_think` p0 ≥ **0.33** (→ 1.19x) | ❌ **0.3281**, short by 0.002 |
-| **S2b wall clock** | NLP mix online ≥ **1.3x** | ⏳ not measured (`docs/notes.md` §11g) |
+| **S2b wall clock** | NLP mix online ≥ **1.3x** | ❌ 1.05–1.09x (two runs of the same bf16 head, `docs/notes.md` §11g/§12b) |
 | **S3 acceptance** | NLP mix mean p0 ≥ **0.40** (§9e) | ✅ 0.495 online, 0.502 offline |
-| **S3 wall clock** | NLP mix online ≥ **1.3x** (§9e) | ❌ 1.19x short context, 1.11x all (128-token replies); decode 1.20-1.35x, prefill is the cost |
+| **S3 wall clock** | NLP mix online ≥ **1.3x** (§9e) | ❌ 1.19x short context, 1.11x all (128-token replies); decode 1.15–1.35x, prefill is the cost |
 
 G4 is recorded as **missed on S2a**: the threshold was fixed in advance and the S2a head reaches 1.186x, not
 1.19x. The realistic mean (0.3159 offline, eight prompts) and the five-prompt online A/B (0.1481 →
 0.3480, measured 1.19x wall clock) say the head is worth shipping for Chinese work anyway, which is
 a decision for the user, not a re-scored gate.
+
+G4's “0.33 → 1.19x” uses the +12% model of §7e, before §12c corrected it to $(1+p_0)/(1+f+d)$. Under
+the corrected model p0 0.33 is about 1.11x, and 1.19x needs p0 ≈ 0.42. Only G4's 1.19x is
+model-derived; the S2b/S3 rows are measured end-to-end.
 
 p0 noise is about ±0.03; do not read anything smaller as a signal.
 
@@ -416,10 +424,10 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | Oversized memfd → OOM killer takes the process silently | check capacity before writing; checkpoint after every segment |
 | Desktop competing for RAM / VRAM | close browsers and move the desktop to the iGPU before training |
 | `llama-ext.h` is private and C++-linked | compile the shim as C++ and declare the prototypes by hand; never guess struct layout with ctypes |
-| The vocabulary caps p0 ([facts.md §2.3](docs/facts.md#23-the-hard-ceiling-on-p0-a-32k-draft-vocabulary)) | measure per-workload coverage before training; change the vocabulary first if it is short |
+| The vocabulary caps p0 ([facts.md §2.3](docs/facts.md#23-the-hard-ceiling-on-p0-the-draft-vocabulary)) | measure per-workload coverage before training; change the vocabulary first if it is short |
 | F32 → bf16 feature rounding | the evaluator must round identically so train and eval agree |
 | Unusual RoPE geometry (64 dims global / 256 swa) | let llama.cpp compute positions; never replicate it in Python |
-| Chunk boundaries | decode one extra token per chunk so the shifted label exists; clear the KV cache between chunks |
+| Chunk boundaries | decode one extra token per chunk so the shifted label exists; clear the KV cache between chunks (non-contiguous `extract_into()` only — S2b/S3 keep it contiguous) |
 | `sp_decode()` writes `take + 1` rows per chunk | reserve `take + 1` rows or the last chunk of a segment walks off the mmap (SIGSEGV) |
 | Target (6 GiB) and head + AdamW state (4 GiB) cannot share a 12 GiB card once the desktop and CUDA context are counted | park the head and optimiser on the CPU while extracting, reload after |
 | Labels outside the draft vocabulary | mask them in the CE (`ignore_index`); never map them to an arbitrary id |
@@ -444,9 +452,9 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | S1 | End-to-end extraction + G1 | ✅ |
 | **S2a** | 8M unique tokens (public corpora) + 8k steps + G3/G3b/G3c | ✅ G4 missed by 0.002 |
 | **D0** | Deployment-matched temperature × sampling matrix | ✅ ceiling 0.80, head 0.29 |
-| **D1** | NLP workload matrix (translation, summary, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
+| **D1** | NLP workload matrix (translation, summarisation, organisation, chat) | ✅ p0 0.344, English coverage 0.81–0.89 |
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
-| **S2b** | NLP mixture + long-context shards, 48K head (3.46M training tokens from ~4.78M generated) | ✅ D1 0.344 → 0.460 |
+| **S2b** | NLP mixture + long-context shards, 48K head (3.46M training rows from ~4.78M generated tokens) | ✅ D1 0.344 → 0.460 |
 | **P0** | Four offline probes: alpha, p1, channel, context length | ✅ alpha ≤ 0.411, p1 0.107, answer 0.385, 32k 0.219 |
 | **S3** | 7.77M rows with the answer slice, short windows and 29k-token documents | ✅ p0 0.502, answer 0.462, 1.19x short context |
 
