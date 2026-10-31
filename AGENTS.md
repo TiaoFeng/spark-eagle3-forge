@@ -292,14 +292,19 @@ than `seq_len + 1` rows used to be dropped by the window sampler.
 # S3: warm start from S2b, answer slice, short-window pool, 32k extraction
 .venv/bin/python scripts/train_s2b.py --model "$MODELS_DIR/<target>.gguf" \
     --d2t datasets/vocab/d2t_v2_48k.i32 --init checkpoints/s2b.pt \
-    --out checkpoints/s3 --steps 6000 --segments 6 --tokens-per-segment 2500000 \
-    --weights sum=0.17,trans=0.17,org=0.13,chat=0.13,long=0.25 \
+    --out checkpoints/s3 --steps 4000 --segments 4 --tokens-per-segment 2300000 \
+    --weights sum=0.09,trans=0.17,org=0.06,chat=0.09,long=0.09 \
     --answer-dir datasets/nlp_answer \
-    --answer-weights sum=0.05,trans=0.05,org=0.03,chat=0.02 \
-    --short-seq-len 256 --short-mix 0.25 --n-ctx 32768
+    --answer-weights sum=0.06,trans=0.15,org=0.05,chat=0.06,long=0.09 \
+    --short-seq-len 256 --short-mix 0.25 --chars-per-token 2.2 \
+    --long-concat-chars 64000 --n-ctx 32768
 ```
 
 Checkpoint names follow `--out`, so this writes `checkpoints/s3.pt` and leaves the S2b head alone.
+The weights are sized to the corpus on hand (4.86M thinking + 4.03M answer tokens);
+`--chars-per-token 2.2` is the measured 2.03-2.66 minus margin, so four segments never run past the
+end of a file. `--long-concat-chars 64000` joins the long-task records into ~29k-token documents,
+which is what exercises the 32k context P0 found untrained.
 
 ### P0 diagnostics (measurement only)
 

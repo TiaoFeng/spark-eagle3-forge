@@ -120,30 +120,64 @@ def iter_code_dirs(dirs, budget_chars: int, skip_chars: int = 0,
                 return
 
 
-def iter_nlp_docs(paths, budget_chars: int, skip_chars: int = 0):
+def _nlp_texts(path):
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text = (rec.get("prompt") or "") + (rec.get("response") or "")
+            if text:
+                yield text
+
+
+def iter_nlp_docs(paths, budget_chars: int, skip_chars: int = 0,
+                  concat_chars: int = 0):
     """Generated NLP records: one document per `prompt + response` pair.
 
     The prompt is the rendered chat template (system + user + assistant
     prefix); the response is the target's own continuation. Training on the
     whole document teaches the draft the prompt distribution as well as the
-    thinking channel (the current corpus never reaches the answer phase).
+    channel the response was sampled from.
+
+    ``concat_chars`` joins consecutive records into one document of roughly that
+    size. P0 measured p0 falling from 0.484 at 2k context to 0.219 at 32k while
+    the corpus only holds 7-8k-token documents, so the head has never seen the
+    long end of the deployment context; joining reaches it with the target's own
+    text instead of waiting for new generation. Characters, not tokens: at the
+    observed 2.0-2.7 chars/token, 64k characters is about 26-30k tokens.
     """
     consumed = 0
     emitted = 0
     for path in paths:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                text = (rec.get("prompt") or "") + (rec.get("response") or "")
-                if not text:
-                    continue
-                consumed += len(text)
-                if consumed <= skip_chars:
-                    continue
-                yield text
-                emitted += len(text)
+        buf: list[str] = []
+        size = 0
+        for text in _nlp_texts(path):
+            if concat_chars and buf and size + len(text) > concat_chars:
+                doc = "".join(buf)
+                buf, size = [], 0
+                consumed += len(doc)
+                if consumed > skip_chars:
+                    yield doc
+                    emitted += len(doc)
                 if emitted >= budget_chars:
                     return
+            if not concat_chars:
+                consumed += len(text)
+                if consumed > skip_chars:
+                    yield text
+                    emitted += len(text)
+                if emitted >= budget_chars:
+                    return
+            else:
+                buf.append(text)
+                size += len(text)
+        if concat_chars and buf:
+            doc = "".join(buf)
+            consumed += len(doc)
+            if consumed > skip_chars:
+                yield doc
+                emitted += len(doc)
+            if emitted >= budget_chars:
+                return

@@ -58,7 +58,8 @@ def build_sources(args):
             p, args.chars_per_source, skip)))
     for path in getattr(args, "nlp", None) or []:
         out.append(("nlp", lambda p=path: corpus.iter_nlp_docs(
-            [p], args.chars_per_source, skip)))
+            [p], args.chars_per_source, skip,
+            getattr(args, "concat_chars", 0) or 0)))
     for path in getattr(args, "code", None) or []:
         out.append(("code", lambda p=path: corpus.iter_code_dirs(
             [p], args.chars_per_source, skip)))

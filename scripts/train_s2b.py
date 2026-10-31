@@ -79,7 +79,7 @@ def plan_segment(args, segment: int):
     data_dir = pathlib.Path(args.data_dir)
     plan = []
 
-    def add(name: str, path: pathlib.Path, weight: float) -> None:
+    def add(name: str, path: pathlib.Path, weight: float, concat: int = 0) -> None:
         if weight <= 0:
             return
         quota = int(args.tokens_per_segment * weight)
@@ -92,12 +92,15 @@ def plan_segment(args, segment: int):
             text=None, code=None, coig=None, firefly=None, wiki=None,
             nlp=[str(path)], chars_per_source=chars,
             skip_chars=segment * chars,
+            concat_chars=concat,
         )
         plan.append((name, quota, build_sources(ns)))
 
+    long_concat = args.long_concat_chars if args.long_concat_chars > 0 else 0
     for task in TASKS:
         if task in weights:
-            add(task, data_dir / ("%s.jsonl" % task), weights[task])
+            add(task, data_dir / ("%s.jsonl" % task), weights[task],
+                concat=long_concat if task == "long" else 0)
 
     # Answer-channel slice (S3): the same tasks rendered with thinking disabled,
     # so the head finally sees the phase it has never been trained on (P0 §13e
@@ -107,7 +110,8 @@ def plan_segment(args, segment: int):
         ans_dir = pathlib.Path(args.answer_dir)
         for task in TASKS:
             if task in ans_weights:
-                add("a_" + task, ans_dir / ("%s.jsonl" % task), ans_weights[task])
+                add("a_" + task, ans_dir / ("%s.jsonl" % task), ans_weights[task],
+                    concat=long_concat if task == "long" else 0)
     return plan
 
 
@@ -185,6 +189,9 @@ def main() -> int:
                     help="fraction of steps drawn from the short pool")
     ap.add_argument("--short-batch-seqs", type=int, default=8,
                     help="sequences per short step, so tokens/step stay comparable")
+    ap.add_argument("--long-concat-chars", type=int, default=0,
+                    help="join long-task records up to this many characters, so the head "
+                         "sees contexts past the 16k extraction window (64k chars ~ 28k tokens)")
     ap.add_argument("--chars-per-token", type=float, default=3.0)
 
     ap.add_argument("--layers", default="2,18,33")

@@ -1113,15 +1113,24 @@ Both are pipeline changes, not model changes.
 - the driver takes `--answer-dir` / `--answer-weights` (logged with an `a_` prefix) and
   `--short-seq-len` / `--short-mix` / `--short-batch-seqs`; a short step uses 8 x 256 tokens so the
   tokens per optimiser step stay at 2,048.
+- `iter_nlp_docs(concat_chars=...)` joins consecutive long-task records into one document, exposed
+  as `--long-concat-chars`. The corpus only holds 7-8k-token documents, so the 16k+ regime that P0
+  measured at 0.219 (§13f) was untrained; 64k characters joins 120 records into 31 documents of
+  about 28-30k tokens without regenerating anything.
 - checkpoint names follow `--out`. They were hard-coded to `s2b*`, so `--out checkpoints/s3` would
   have overwritten `checkpoints/s2b.pt`.
 
 ### 14c. Smoke
 
-70 answer records at scale 0.02 with `--n-predict 384`; all carry `thinking: false` and the responses
-are the answer channel. Extraction label coverage is 0.983-0.996 on the answer tasks. A 20-step run
-over 25,600 rows reports 4,042 long windows and 6,873 short windows, and the short steps fire at the
-requested rate.
+The generated corpora measure 4.86M tokens (thinking) and 4.03M (answers, 3,520 records, 0-3 records
+per task hit `n_predict`). All 70 answer records of the scale-0.02 sample carry `thinking: false` and
+the responses are the answer channel; extraction label coverage is 0.983-0.996 on the answer tasks. A
+20-step run over 25,600 rows reports 4,042 long windows and 6,873 short windows, and the short steps
+fire at the requested rate.
+
+The observed 2.03-2.66 characters per token matters for segmenting: `--chars-per-token` defaults to
+3.0, which overshoots every file and is how S2b lost its last long segment. 2.2 keeps four segments
+inside the corpora with room to spare.
 
 ### 14d. What it does not tell us
 
