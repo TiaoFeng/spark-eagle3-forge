@@ -33,6 +33,11 @@ acceptances against 0.555 with the target's own hidden, capping `n-max 2` at +6.
 answer channel measures 0.385 against 0.493 in thinking, and p0 falls from 0.484 at 2k context to
 0.219 at 32k. S3 therefore adds an answer-channel slice and 32k shards.
 
+S3 (`docs/notes.md` §14) is trained and measured: 7.77M rows, p0 0.457 → **0.502** offline (0.495
+online), the answer channel 0.385 → **0.462**, 16k context 0.281 → **0.375**, 32k only 0.219 →
+0.250. Short-context NLP work runs **1.19x** faster; 13-14k documents run **0.92x**, because the
+verification overhead grows with context. The 1.3x wall-clock gate is therefore not met.
+
 ## 1. Hard constraints (non-negotiable)
 
 Every approach must satisfy all of these:
@@ -392,6 +397,8 @@ G0–G3c pass (evidence: `docs/notes.md` §§3, 5c, 7); the gates are:
 |---|---|---|
 | **G4 ship (S2a)** | `chat_think` p0 ≥ **0.33** (→ 1.19x) | ❌ **0.3281**, short by 0.002 |
 | **S2b wall clock** | NLP mix online ≥ **1.3x** | ⏳ not measured (`docs/notes.md` §11g) |
+| **S3 acceptance** | NLP mix mean p0 ≥ **0.40** (§9e) | ✅ 0.495 online, 0.502 offline |
+| **S3 wall clock** | NLP mix online ≥ **1.3x** (§9e) | ❌ 1.19x short context, 1.11x all, 0.92x at 13-14k |
 
 G4 is recorded as **missed on S2a**: the threshold was fixed in advance and the S2a head reaches 1.186x, not
 1.19x. The realistic mean (0.3159 offline, eight prompts) and the five-prompt online A/B (0.1481 →
@@ -439,7 +446,7 @@ p0 noise is about ±0.03; do not read anything smaller as a signal.
 | **D2** | 48K bilingual union vocabulary + S2a warm start | ✅ held-out coverage 0.971 |
 | **S2b** | NLP mixture + long-context shards, 48K head (3.46M training tokens from ~4.78M generated) | ✅ D1 0.344 → 0.460 |
 | **P0** | Four offline probes: alpha, p1, channel, context length | ✅ alpha ≤ 0.411, p1 0.107, answer 0.385, 32k 0.219 |
-| **S3** | 12–16M tokens with the answer slice and short-document windows | ⏳ pipeline ready (§14), full run pending |
+| **S3** | 7.77M rows with the answer slice, short windows and 29k-token documents | ✅ p0 0.502, answer 0.462, 1.19x short context |
 
 ## 12. Before publishing (read before writing any file)
 

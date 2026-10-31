@@ -1138,6 +1138,70 @@ The smoke proves the plumbing, not a gain. Whether the answer slice moves p0 has
 the same D1 matrix plus the `--think-off` probe, on a corpus large enough to matter (S3: 12-16M
 unique rows).
 
+### 14e. The S3 run
+
+Four segments of ~1.94M rows (**7.77M rows**, 8.19M token updates), 4,000 steps, 57 minutes. Final
+train CE 1.94, top-1 0.673. Every task filled its quota in every segment, so the `--chars-per-token
+2.2` sizing worked, and `--long-concat-chars 64000` gave each segment eight joined documents of
+about 29k tokens.
+
+| probe (same protocol on both sides) | S2b | S3 | delta |
+|---|---:|---:|---:|
+| p0, greedy 128, 48 D1 prompts | 0.457 | **0.502** | +0.045 |
+| answer channel (`--think-off`) | 0.385 | **0.462** | +0.076 |
+| p0 at 2k / 8k / 16k / 32k | 0.484 / 0.406 / 0.281 / 0.219 | **0.594 / 0.422 / 0.375 / 0.250** | +0.110 / +0.016 / +0.094 / +0.031 |
+| p1, second draft step | 0.106 | 0.113 | +0.007 |
+
+Per workload, p0: chat 0.331 -> 0.417, zh->en 0.468 -> 0.537, en->zh 0.491 -> 0.548,
+zh summary 0.475 -> 0.478, en->zh summary 0.418 -> 0.461, organisation 0.480 -> 0.506,
+long context 0.513 -> 0.540.
+
+Answer channel per workload: chat 0.292 -> 0.377, zh->en 0.448 -> 0.506, en->zh 0.385 -> 0.468,
+zh summary 0.298 -> 0.353, en->zh summary 0.312 -> 0.381, organisation 0.439 -> 0.545,
+long context 0.470 -> 0.543.
+
+Three things follow:
+
+1. **The answer slice is the biggest single win** (+0.076, every workload up, organisation +0.106),
+   which is what §13e predicted from a 0.385 against 0.493 gap.
+2. **Chat gains most overall** (+0.086): it is the workload the short pool recovered, so the
+   documents the old sampler dropped were worth what the probe suggested.
+3. **16k is fixed, 32k is not** (+0.094 and +0.031). The joined 29k-token documents taught the 16k
+   regime; at 32k the head is still at 0.250.
+
+### 14f. Wall clock, and why long context does not pay
+
+Online A/B, 48 D1 prompts, temp 1.0, Q8_0 head, the same server with and without `-md`, wall clock
+including prefill:
+
+| workload | speed-up |
+|---|---:|
+| chat | 1.06x |
+| translation, summary, organisation (short context) | 1.17-1.30x |
+| **short-context mean** | **1.19x** |
+| long context (13-14k prompts) | **0.92x** |
+| all 48 prompts | 1.11x |
+
+- The short-context workloads land near the cost model; chat is the weakest (1.06x) because its p0
+  is still the lowest.
+- **Long context is slower with the head.** The verification overhead is not a constant: at 13-14k
+  the extra verified token reads the whole KV, so $f$ grows well past 0.08 and the break-even p0
+  rises with it. S3 reaches 0.419 there, which is not enough. The same effect explains why the
+  all-48 average (1.11x) sits below the short-context mean: six long requests take a quarter of the
+  wall time.
+- Online acceptance (0.495) matches the offline replay (0.502) to 0.007, so the export and the
+  replay agree, as G1 requires.
+- Against the §9e gate (`NLP mix mean p0 >= 0.40`, `online wall clock >= 1.3x`): acceptance passes,
+  wall clock does not. 1.3x needs p0 around 0.55 at this cost structure.
+
+### 14g. What to do with it
+
+- Ship S3 for short-context NLP work: +0.045 p0, +0.076 in the answer channel, ~1.19x.
+- Do not enable the head for long documents yet; it costs about 8%. Either raise p0 there or leave
+  speculation off for those sessions.
+- The next levers, in order: more answer and short-document data (the slice that worked), then a
+  two-step recipe only if p1 clears 0.31, then KD for probabilistic drafting.
+
 ## Open questions
 
 1. ~~**Draft vocabulary**~~ — **decided in §9**: the NLP mix measures 0.81-0.89 coverage on
@@ -1162,9 +1226,14 @@ unique rows).
    against 0.493 in thinking, with summarisation answers weakest. The pipeline now exists (§14):
    `gen_nlp_data.py --think-off` builds the corpus and `--answer-weights` mixes it. What is unknown
    is the weight, and whether the answer phase moves at all.
-8. **Is the context drop a training cap or genuine feature drift?** (§13f) p0 falls from 0.484 at 2k
-   to 0.219 at 32k, and the decline starts inside the 16k extraction window. S3 with 32k shards
-   separates the two.
+8. **Is the context drop a training cap or genuine feature drift?** (§13f, answered in §14e) S3's
+   joined 29k-token documents lift 16k from 0.281 to 0.375 but 32k only from 0.219 to 0.250, so part
+   of the drop was the training window and part is not. The cost side matters more: at 13-14k the
+   verification overhead grows and the head is a net 0.92x (§14f).
+9. **How does the per-pass overhead scale with context?** (§14f) `f = 0.08` was measured at short
+   context. The long-context A/B says it grows enough to flip the sign at 13-14k with p0 0.42. An
+   A/B at 4k / 8k / 16k / 32k would turn break-even into a curve instead of a constant, which is
+   what a context-aware deployment rule needs.
 
 ## Next step
 
