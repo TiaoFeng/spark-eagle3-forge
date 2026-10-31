@@ -9,13 +9,13 @@
 # Why Q8_0 is the default: measured on the S2b head over the 48-prompt NLP set
 # (128 tokens each, temp 1.0, ctx 32768, greedy draft, n-max 1), speed relative to
 # the same server without a draft head:
-#   head      file on disk   accept   mean len   vs no head
-#   bf16      500.0 MiB      0.4598   1.470      1.166x
-#   Q8_0      268.2 MiB      0.4595   1.469      1.217x
-#   Q4_K_M    182.2 MiB      0.4616   1.46       1.227x
-# The argmax survives 8-bit quantisation untouched; the draft pass is cheap, so
-# Q6_K/Q4_K_M buy under 1% more and are not worth the extra risk. Details in
-# docs/notes.md §12.
+#   head      file on disk   accept   mean len   decode vs no head
+#   bf16      500.0 MiB      0.4541   1.454      1.163x
+#   Q8_0      268.2 MiB      0.4537   1.454      1.220x
+#   Q4_K_M    182.2 MiB      0.4616   1.46       1.227x   (14-prompt subset)
+# The argmax survives 8-bit quantisation in practice: acceptance is indistinguishable from bf16
+# (0.4541 vs 0.4537, docs/notes.md §12b) and 8-bit is expected to preserve the argmax. The draft pass
+# is cheap, so Q6_K/Q4_K_M buy under 1% more and are not worth the extra risk. Details in §12.
 #
 # usage:
 #   scripts/quantize_head.sh <ckpt.pt> <out.gguf> [QUANT]
@@ -42,10 +42,16 @@ LLAMA="${LLAMA:-${LLAMACPP_ROOT:-}/build/bin/llama}"
 TMP="$OUT.bf16.tmp.gguf"
 trap 'rm -f "$TMP"' EXIT
 
+# the temporary file name must not leak into the GGUF: general.name is what
+# `llama-quantize` copies through, so name the export after the real output and
+# let DESCRIPTION carry the one-line model card (optional).
+NAME="$(basename "$OUT" .gguf)"
+
 cd "$ROOT"
 echo "[1/3] export $CKPT -> bf16 gguf"
 PYTHONPATH="$ROOT" "$PY" -m spark_eagle3.export_gguf \
-    --ckpt "$CKPT" --out "$TMP" --tokenizer-from "$TOK"
+    --ckpt "$CKPT" --out "$TMP" --tokenizer-from "$TOK" \
+    --name "$NAME" --description "${DESCRIPTION:-}"
 
 echo "[2/3] quantize -> $QUANT"
 "$LLAMA" quantize "$TMP" "$OUT" "$QUANT"

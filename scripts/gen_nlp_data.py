@@ -26,7 +26,7 @@ Usage:
   # answer channel (thinking disabled), its own directory
   python scripts/gen_nlp_data.py --server "$LLAMACPP_ROOT/build/bin/llama-server" \
       --model "$MODELS_DIR/<target>.gguf" --out-dir datasets/nlp_answer \
-      --think-off --n-predict 384 --long-n-predict 640 --parallel 4
+      --think-off --n-predict 512 --long-n-predict 640 --parallel 4
 """
 
 from __future__ import annotations

@@ -13,8 +13,9 @@ Differences from `train.py` (the S2a driver):
 S3 adds two options rather than a second driver:
 
   * `--answer-dir` / `--answer-weights` mix in a thinking-off corpus from
-    `gen_nlp_data.py --think-off`. S2b only ever saw the thinking channel
-    (`docs/notes.md` §11g) and P0 measured the answer phase 0.11 lower (§13e).
+    `gen_nlp_data.py --think-off`. S2b's corpus is almost entirely the thinking
+    channel — 0.46% of its response text is answer (`docs/notes.md` §11g) — and
+    P0 measured the answer phase 0.11 lower (§13e).
   * `--short-seq-len` / `--short-mix` sample from a second window pool built
     from the documents the long pool drops, because a chunk shorter than
     `seq_len + 1` rows used to contribute nothing at all — which is exactly the

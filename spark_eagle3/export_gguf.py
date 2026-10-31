@@ -100,6 +100,8 @@ def main() -> int:
                     help="general.name; default: the output filename stem")
     ap.add_argument("--size-label", default="",
                     help="general.size_label; default: the parameter count of the checkpoint")
+    ap.add_argument("--description", default="",
+                    help="general.description; omitted when empty")
     ap.add_argument("--dtype", choices=("bf16", "float32"), default="bf16")
     ap.add_argument("--skip-weights", action="store_true",
                     help="write an all-zero head (layout smoke test)")
@@ -158,6 +160,8 @@ def main() -> int:
         "eagle3.rope.dimension_count": (GGUFValueType.UINT32, head_dim),
         "eagle3.vocab_size": (GGUFValueType.UINT32, target_vocab),
     }
+    if args.description:
+        kv["general.description"] = (GGUFValueType.STRING, args.description)
     for key, spec in kv.items():
         if spec[0] == GGUFValueType.ARRAY:
             w.add_key_value(key, spec[1], GGUFValueType.ARRAY, spec[2])
